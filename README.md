@@ -160,12 +160,3 @@ https://controle-financeiro-ea.vercel.app
 | **Lucide React** | Ícones da interface |
 | **Framer Motion** | Animações |
 | **Vercel** | Deploy da aplicação |
-
----
-
-## 🖼️ Prévia do Projeto
-
-> Adicione aqui um print da Home ou do Dashboard.
-
-```md
-![Preview do Projeto](./src/assets/preview.png)
