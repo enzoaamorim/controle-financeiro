@@ -15,6 +15,7 @@ import {
   Download,
   Edit3,
   Eye,
+  EyeOff,
   FileText,
   Home,
   KeyRound,
@@ -103,6 +104,34 @@ function classNames(...items) {
 
 function getUserDisplayName(session) {
   return session?.user?.user_metadata?.name || session?.user?.email?.split("@")[0] || "Usuário";
+}
+
+function validateEmail(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+
+  if (!normalized) return "Informe seu e-mail.";
+  if (normalized.length > 254) return "O e-mail informado é muito longo.";
+  if (normalized.includes(" ")) return "O e-mail não pode conter espaços.";
+
+  const parts = normalized.split("@");
+  if (parts.length !== 2) return "Digite um e-mail válido. Exemplo: nome@email.com.";
+
+  const [localPart, domain] = parts;
+
+  if (!localPart || !domain) return "Digite um e-mail válido. Exemplo: nome@email.com.";
+  if (localPart.length > 64) return "A parte antes do @ está muito longa.";
+  if (localPart.startsWith(".") || localPart.endsWith(".")) return "O e-mail não pode começar ou terminar com ponto.";
+  if (normalized.includes("..")) return "O e-mail não pode ter pontos consecutivos.";
+
+  const emailPattern = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
+  if (!emailPattern.test(normalized)) return "Digite um e-mail válido. Exemplo: nome@email.com.";
+
+  const domainLabels = domain.split(".");
+  if (domainLabels.some((label) => !label || label.startsWith("-") || label.endsWith("-"))) {
+    return "O domínio do e-mail parece inválido.";
+  }
+
+  return "";
 }
 
 function uid() {
@@ -305,6 +334,24 @@ export default function ControleFinanceiroCompleto() {
     if (!authLoading && !firstLoadRef.current) {
       setScreen("home");
       firstLoadRef.current = true;
+    }
+  }, [authLoading]);
+
+  useEffect(() => {
+    if (authLoading) return;
+
+    const params = new URLSearchParams(window.location.search);
+    const hashParams = new URLSearchParams(window.location.hash.replace("#", ""));
+    const authStatus = params.get("auth");
+    const authType = params.get("type") || hashParams.get("type");
+    const hasAccessToken = hashParams.has("access_token") || hashParams.has("refresh_token");
+
+    if (authStatus === "confirmed" || authType === "signup" || hasAccessToken) {
+      setSystemMessage("E-mail confirmado com sucesso. Faça login para acessar sua conta.");
+      setAuthMode("login");
+      setScreen("auth");
+
+      window.history.replaceState({}, document.title, window.location.pathname);
     }
   }, [authLoading]);
 
@@ -726,15 +773,43 @@ function PreviewRow({ title, value, tone }) {
 function AuthScreen({ mode, setMode, onBack, onSuccess, systemMessage }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [emailTouched, setEmailTouched] = useState(false);
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [message, setMessage] = useState(systemMessage || "");
   const [loading, setLoading] = useState(false);
   const isLogin = mode === "login";
   const isReset = mode === "reset";
 
+  const normalizedEmail = email.trim().toLowerCase();
+  const emailValidationMessage = useMemo(() => validateEmail(email), [email]);
+  const shouldShowEmailValidation = emailTouched && email.trim().length > 0;
+
+  const passwordChecks = useMemo(
+    () => ({
+      minLength: password.length >= 6,
+      hasLetter: /[A-Za-zÀ-ÿ]/.test(password),
+      hasNumber: /\d/.test(password),
+    }),
+    [password]
+  );
+
+  const passwordStrength = Object.values(passwordChecks).filter(Boolean).length;
+  const passwordsMatch = !confirmPassword || password === confirmPassword;
+
   useEffect(() => {
     setMessage(systemMessage || "");
   }, [systemMessage]);
+
+  useEffect(() => {
+    setEmailTouched(false);
+    setPassword("");
+    setConfirmPassword("");
+    setShowPassword(false);
+    setShowConfirmPassword(false);
+  }, [mode]);
 
   async function handleAuth(event) {
     event.preventDefault();
@@ -742,8 +817,17 @@ function AuthScreen({ mode, setMode, onBack, onSuccess, systemMessage }) {
     setMessage("");
 
     try {
+      setEmailTouched(true);
+      const trimmedName = name.trim();
+      const emailError = validateEmail(normalizedEmail);
+
+      if (emailError) {
+        setMessage(emailError);
+        return;
+      }
+
       if (isReset) {
-        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
           redirectTo: window.location.origin,
         });
 
@@ -752,18 +836,34 @@ function AuthScreen({ mode, setMode, onBack, onSuccess, systemMessage }) {
         return;
       }
 
+      if (!isLogin && trimmedName.length < 2) {
+        setMessage("Informe um nome com pelo menos 2 caracteres.");
+        return;
+      }
+
+      if (!isReset && password.length < 6) {
+        setMessage("A senha precisa ter pelo menos 6 caracteres.");
+        return;
+      }
+
+      if (!isLogin && password !== confirmPassword) {
+        setMessage("As senhas não conferem. Verifique e tente novamente.");
+        return;
+      }
+
       if (isLogin) {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        const { error } = await supabase.auth.signInWithPassword({ email: normalizedEmail, password });
         if (error) throw error;
         onSuccess();
         return;
       }
 
       const { data, error } = await supabase.auth.signUp({
-        email,
+        email: normalizedEmail,
         password,
         options: {
-          data: { name },
+          emailRedirectTo: `${window.location.origin}?auth=confirmed`,
+          data: { name: trimmedName },
         },
       });
 
@@ -772,7 +872,7 @@ function AuthScreen({ mode, setMode, onBack, onSuccess, systemMessage }) {
       if (data?.session) {
         onSuccess();
       } else {
-        setMessage("Cadastro criado. Se o Supabase pedir confirmação, valide seu e-mail antes de entrar.");
+        setMessage("Conta criada! Confirme seu e-mail para finalizar o cadastro e liberar o acesso.");
         setMode("login");
       }
     } catch (error) {
@@ -805,13 +905,88 @@ function AuthScreen({ mode, setMode, onBack, onSuccess, systemMessage }) {
           )}
 
           <Field label="E-mail">
-            <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="input" placeholder="seuemail@email.com" required />
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              onBlur={() => {
+                setEmail(normalizedEmail);
+                setEmailTouched(true);
+              }}
+              className={classNames("input", shouldShowEmailValidation && emailValidationMessage ? "input-error" : "")}
+              placeholder="seuemail@email.com"
+              autoComplete="email"
+              inputMode="email"
+              spellCheck={false}
+              required
+            />
+            {shouldShowEmailValidation && emailValidationMessage && (
+              <p className="mt-2 rounded-2xl border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs font-bold text-rose-300">
+                {emailValidationMessage}
+              </p>
+            )}
+            {shouldShowEmailValidation && !emailValidationMessage && (
+              <p className="mt-2 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-300">
+                E-mail válido.
+              </p>
+            )}
           </Field>
 
           {!isReset && (
-            <Field label="Senha">
-              <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} className="input" placeholder="Digite sua senha" minLength={6} required />
-            </Field>
+            <PasswordInput
+              label="Senha"
+              value={password}
+              onChange={setPassword}
+              show={showPassword}
+              onToggle={() => setShowPassword((value) => !value)}
+              placeholder="Digite sua senha"
+              autoComplete={isLogin ? "current-password" : "new-password"}
+            />
+          )}
+
+          {!isLogin && !isReset && (
+            <>
+              <PasswordInput
+                label="Confirmar senha"
+                value={confirmPassword}
+                onChange={setConfirmPassword}
+                show={showConfirmPassword}
+                onToggle={() => setShowConfirmPassword((value) => !value)}
+                placeholder="Digite a senha novamente"
+                autoComplete="new-password"
+              />
+
+              {confirmPassword && !passwordsMatch && (
+                <p className="rounded-2xl border border-rose-500/20 bg-rose-500/10 p-3 text-sm font-semibold text-rose-300">
+                  As senhas digitadas ainda não conferem.
+                </p>
+              )}
+
+              <div className="rounded-2xl border border-slate-500/15 bg-slate-500/10 p-4">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <p className="text-sm font-black">Segurança da senha</p>
+                  <span className="muted-text text-xs font-bold">
+                    {passwordStrength === 3 ? "Boa" : passwordStrength === 2 ? "Média" : "Básica"}
+                  </span>
+                </div>
+                <div className="mb-3 grid grid-cols-3 gap-2">
+                  {[1, 2, 3].map((level) => (
+                    <span
+                      key={level}
+                      className={classNames(
+                        "h-2 rounded-full transition",
+                        passwordStrength >= level ? "bg-emerald-500" : "bg-slate-500/20"
+                      )}
+                    />
+                  ))}
+                </div>
+                <div className="grid gap-1 text-xs font-semibold">
+                  <PasswordRule active={passwordChecks.minLength} text="Mínimo de 6 caracteres" />
+                  <PasswordRule active={passwordChecks.hasLetter} text="Pelo menos uma letra" />
+                  <PasswordRule active={passwordChecks.hasNumber} text="Pelo menos um número" />
+                </div>
+              </div>
+            </>
           )}
 
           {message && <p className="rounded-2xl bg-slate-500/10 p-3 text-sm font-semibold text-emerald-400">{message}</p>}
@@ -2614,6 +2789,43 @@ function DateInput({ value, onChange }) {
   return <input type="text" inputMode="numeric" value={displayValue} onChange={handleChange} onBlur={handleBlur} placeholder="dd/mm/aaaa" maxLength={10} className="input" />;
 }
 
+function PasswordInput({ label, value, onChange, show, onToggle, placeholder, autoComplete }) {
+  return (
+    <Field label={label}>
+      <div className="relative">
+        <input
+          type={show ? "text" : "password"}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          className="input pr-12"
+          placeholder={placeholder}
+          minLength={6}
+          autoComplete={autoComplete}
+          required
+        />
+        <button
+          type="button"
+          onClick={onToggle}
+          className="absolute right-3 top-1/2 inline-flex -translate-y-1/2 items-center justify-center rounded-xl p-2 text-slate-400 transition hover:bg-slate-500/10 hover:text-emerald-400"
+          aria-label={show ? "Ocultar senha" : "Mostrar senha"}
+          title={show ? "Ocultar senha" : "Mostrar senha"}
+        >
+          {show ? <EyeOff size={18} /> : <Eye size={18} />}
+        </button>
+      </div>
+    </Field>
+  );
+}
+
+function PasswordRule({ active, text }) {
+  return (
+    <div className={classNames("flex items-center gap-2", active ? "text-emerald-400" : "muted-text")}>
+      <CheckCircle2 size={14} />
+      <span>{text}</span>
+    </div>
+  );
+}
+
 function Field({ label, children }) {
   return (
     <label className="block">
@@ -2939,6 +3151,7 @@ function GlobalStyles() {
       .field-shell, .input { border: 1px solid var(--border); background: var(--surface-2); color: var(--text); transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.2s ease; }
       .input { width: 100%; border-radius: 1rem; padding: 0.75rem 0.9rem; font-size: 0.95rem; outline: none; }
       .input:focus, .field-shell:focus-within { border-color: rgb(16 185 129); box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15); }
+      .input-error, .input-error:focus { border-color: rgb(244 63 94); box-shadow: 0 0 0 3px rgba(244, 63, 94, 0.14); }
       input, select, button { color: inherit; }
       button, select, input[type="button"], input[type="submit"], .carousel-button, .carousel-dot { cursor: pointer; }
       button:disabled, input:disabled, select:disabled { cursor: not-allowed; }
