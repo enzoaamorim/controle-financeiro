@@ -53,6 +53,7 @@ import {
 } from "recharts";
 
 const THEME_KEY = "controle-financeiro-theme";
+const EMAIL_CONFIRMATION_TARGET_KEY = "controle-financeiro-email-confirmation-target";
 
 const money = new Intl.NumberFormat("pt-BR", {
   style: "currency",
@@ -258,6 +259,53 @@ function readFileText(file) {
   });
 }
 
+function hasAuthRedirectParams() {
+  if (typeof window === "undefined") return false;
+
+  const params = new URLSearchParams(window.location.search);
+  const hashParams = new URLSearchParams(window.location.hash.replace("#", ""));
+
+  return (
+    params.has("auth") ||
+    params.has("next") ||
+    params.has("code") ||
+    params.has("type") ||
+    hashParams.has("type") ||
+    hashParams.has("code") ||
+    hashParams.has("access_token") ||
+    hashParams.has("refresh_token")
+  );
+}
+
+function markEmailConfirmationTarget() {
+  try {
+    localStorage.setItem(EMAIL_CONFIRMATION_TARGET_KEY, "dashboard");
+    sessionStorage.setItem(EMAIL_CONFIRMATION_TARGET_KEY, "dashboard");
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function shouldOpenDashboardAfterConfirmation() {
+  try {
+    return (
+      localStorage.getItem(EMAIL_CONFIRMATION_TARGET_KEY) === "dashboard" ||
+      sessionStorage.getItem(EMAIL_CONFIRMATION_TARGET_KEY) === "dashboard"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function clearEmailConfirmationTarget() {
+  try {
+    localStorage.removeItem(EMAIL_CONFIRMATION_TARGET_KEY);
+    sessionStorage.removeItem(EMAIL_CONFIRMATION_TARGET_KEY);
+  } catch {
+    // ignore storage errors
+  }
+}
+
 
 export default function ControleFinanceiroCompleto() {
   const [darkMode, setDarkMode] = useState(() => {
@@ -325,6 +373,12 @@ export default function ControleFinanceiroCompleto() {
     } = supabase.auth.onAuthStateChange((_event, currentSession) => {
       setSession(currentSession);
       setAuthLoading(false);
+
+      if (currentSession && (hasAuthRedirectParams() || shouldOpenDashboardAfterConfirmation())) {
+        clearEmailConfirmationTarget();
+        setSystemMessage("E-mail confirmado com sucesso. Bem-vindo ao seu painel financeiro.");
+        setScreen("dashboard");
+      }
     });
 
     return () => subscription.unsubscribe();
@@ -332,28 +386,76 @@ export default function ControleFinanceiroCompleto() {
 
   useEffect(() => {
     if (!authLoading && !firstLoadRef.current) {
-      setScreen("home");
+      const shouldGoDashboard = Boolean(session) && (hasAuthRedirectParams() || shouldOpenDashboardAfterConfirmation());
+
+      if (shouldGoDashboard) {
+        clearEmailConfirmationTarget();
+        setSystemMessage("E-mail confirmado com sucesso. Bem-vindo ao seu painel financeiro.");
+        setScreen("dashboard");
+      } else if (!hasAuthRedirectParams()) {
+        setScreen("home");
+      }
+
       firstLoadRef.current = true;
     }
-  }, [authLoading]);
+  }, [authLoading, session]);
 
   useEffect(() => {
     if (authLoading) return;
 
-    const params = new URLSearchParams(window.location.search);
-    const hashParams = new URLSearchParams(window.location.hash.replace("#", ""));
-    const authStatus = params.get("auth");
-    const authType = params.get("type") || hashParams.get("type");
-    const hasAccessToken = hashParams.has("access_token") || hashParams.has("refresh_token");
+    async function handleEmailConfirmationRedirect() {
+      const params = new URLSearchParams(window.location.search);
+      const hashParams = new URLSearchParams(window.location.hash.replace("#", ""));
+      const authStatus = params.get("auth");
+      const authType = params.get("type") || hashParams.get("type");
+      const code = params.get("code");
+      const hasAccessToken = hashParams.has("access_token") || hashParams.has("refresh_token");
 
-    if (authStatus === "confirmed" || authType === "signup" || hasAccessToken) {
-      setSystemMessage("E-mail confirmado com sucesso. Faça login para acessar sua conta.");
-      setAuthMode("login");
-      setScreen("auth");
+      const isEmailConfirmation =
+        authStatus === "confirmed" ||
+        authStatus === "confirming" ||
+        authType === "signup" ||
+        Boolean(code) ||
+        hasAccessToken ||
+        shouldOpenDashboardAfterConfirmation();
 
-      window.history.replaceState({}, document.title, window.location.pathname);
+      if (!isEmailConfirmation) return;
+
+      try {
+        let currentSession = session;
+
+        if (code) {
+          const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+          if (error) throw error;
+          currentSession = data?.session || null;
+        }
+
+        if (!currentSession) {
+          const { data } = await supabase.auth.getSession();
+          currentSession = data?.session || null;
+        }
+
+        if (currentSession) {
+          clearEmailConfirmationTarget();
+          setSession(currentSession);
+          setSystemMessage("E-mail confirmado com sucesso. Bem-vindo ao seu painel financeiro.");
+          setScreen("dashboard");
+        } else {
+          setSystemMessage("E-mail confirmado com sucesso. Faça login para acessar sua conta.");
+          setAuthMode("login");
+          setScreen("auth");
+        }
+      } catch {
+        setSystemMessage("E-mail confirmado com sucesso. Faça login para acessar sua conta.");
+        setAuthMode("login");
+        setScreen("auth");
+      } finally {
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
     }
-  }, [authLoading]);
+
+    handleEmailConfirmationRedirect();
+  }, [authLoading, session]);
 
   function goToAuth(mode = "login") {
     setAuthMode(mode);
@@ -858,16 +960,21 @@ function AuthScreen({ mode, setMode, onBack, onSuccess, systemMessage }) {
         return;
       }
 
+      markEmailConfirmationTarget();
+
       const { data, error } = await supabase.auth.signUp({
         email: normalizedEmail,
         password,
         options: {
-          emailRedirectTo: `${window.location.origin}?auth=confirmed`,
+          emailRedirectTo: `${window.location.origin}?auth=confirming&next=dashboard`,
           data: { name: trimmedName },
         },
       });
 
-      if (error) throw error;
+      if (error) {
+        clearEmailConfirmationTarget();
+        throw error;
+      }
 
       if (data?.session) {
         onSuccess();
@@ -1117,7 +1224,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
       if (!preferenceRow) {
         const { data: createdPreference, error: preferenceError } = await supabase
           .from("user_preferences")
-          .insert({ user_id: user.id })
+          .upsert({ user_id: user.id }, { onConflict: "user_id" })
           .select("*")
           .single();
         if (preferenceError) throw preferenceError;
