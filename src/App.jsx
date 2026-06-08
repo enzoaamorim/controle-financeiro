@@ -202,6 +202,27 @@ function formatCardType(type) {
   return type || "Crédito";
 }
 
+function isCreditLikeCardType(type) {
+  const normalized = String(type || "Crédito").toLowerCase();
+  return normalized.includes("crédito") || normalized.includes("credito");
+}
+
+function isStoredValueCardType(type) {
+  return !isCreditLikeCardType(type);
+}
+
+function getMonthEndISO(monthValue) {
+  const [year, month] = String(monthValue || getCurrentMonth()).split("-");
+  const lastDay = daysInMonth(year, month);
+  return `${year}-${month}-${String(lastDay).padStart(2, "0")}`;
+}
+
+function getAdjustmentLabel(type) {
+  if (type === "credit") return "Crédito / recarga";
+  if (type === "payment") return "Pagamento";
+  return "Ajuste";
+}
+
 function isCardBasedPaymentMethod(method) {
   return ["Débito", "Crédito", "Cartão alimentação", "Cartão refeição", "Vale alimentação", "Vale refeição"].includes(method);
 }
@@ -308,6 +329,15 @@ function normalizeCard(row) {
     closing_day: normalizeOptionalCardDay(row.closing_day),
     due_day: normalizeOptionalCardDay(row.due_day),
     card_type: row?.card_type || "Crédito",
+  };
+}
+
+function normalizeCardAdjustment(row) {
+  return {
+    ...row,
+    amount: Number(row.amount || 0),
+    adjustment_type: row.adjustment_type || "payment",
+    date: row.date || new Date().toISOString().slice(0, 10),
   };
 }
 
@@ -1994,6 +2024,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
   const [limits, setLimits] = useState([]);
   const [recurringItems, setRecurringItems] = useState([]);
   const [creditCards, setCreditCards] = useState([]);
+  const [cardAdjustments, setCardAdjustments] = useState([]);
   const [preferences, setPreferences] = useState(null);
 
   const [query, setQuery] = useState("");
@@ -2150,16 +2181,17 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     hideToast();
 
     try {
-      const [transactionsResult, goalsResult, limitsResult, recurringResult, cardsResult, preferencesResult] = await Promise.all([
+      const [transactionsResult, goalsResult, limitsResult, recurringResult, cardsResult, cardAdjustmentsResult, preferencesResult] = await Promise.all([
         supabase.from("transactions").select("*").eq("user_id", user.id).order("date", { ascending: false }),
         supabase.from("goals").select("*").eq("user_id", user.id).order("created_at", { ascending: false }),
         supabase.from("category_limits").select("*").eq("user_id", user.id).order("category", { ascending: true }),
         supabase.from("recurring_items").select("*").eq("user_id", user.id).order("created_at", { ascending: false }),
         supabase.from("credit_cards").select("*").eq("user_id", user.id).order("created_at", { ascending: false }),
+        supabase.from("card_adjustments").select("*").eq("user_id", user.id).order("date", { ascending: false }),
         supabase.from("user_preferences").select("*").eq("user_id", user.id).limit(1),
       ]);
 
-      const error = transactionsResult.error || goalsResult.error || limitsResult.error || recurringResult.error || cardsResult.error || preferencesResult.error;
+      const error = transactionsResult.error || goalsResult.error || limitsResult.error || recurringResult.error || cardsResult.error || cardAdjustmentsResult.error || preferencesResult.error;
       if (error) throw error;
 
       setTransactions((transactionsResult.data || []).map(normalizeTransaction));
@@ -2167,6 +2199,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
       setLimits((limitsResult.data || []).map(normalizeLimit));
       setRecurringItems((recurringResult.data || []).map(normalizeRecurring));
       setCreditCards((cardsResult.data || []).map(normalizeCard));
+      setCardAdjustments((cardAdjustmentsResult.data || []).map(normalizeCardAdjustment));
 
       let preferenceRow = (preferencesResult.data || [])[0];
       if (!preferenceRow) {
@@ -2303,14 +2336,45 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
   }, [previousMonthTransactions]);
 
   const cardUsage = useMemo(() => {
+    const monthEnd = getMonthEndISO(selectedMonth);
+
     return creditCards.map((card) => {
-      const spent = monthTransactions
-        .filter((item) => item.type === "expense" && item.card_id === card.id)
-        .reduce((total, item) => total + Number(item.amount), 0);
-      const percent = card.card_limit > 0 ? Math.round((spent / card.card_limit) * 100) : 0;
-      return { ...card, spent, percent, available: Math.max(0, Number(card.card_limit || 0) - spent) };
+      const totalExpenses = transactions
+        .filter((item) => item.type === "expense" && item.card_id === card.id && item.date <= monthEnd)
+        .reduce((total, item) => total + Number(item.amount || 0), 0);
+
+      const cardEvents = cardAdjustments.filter((item) => item.card_id === card.id && item.date <= monthEnd);
+      const totalPayments = cardEvents
+        .filter((item) => item.adjustment_type === "payment")
+        .reduce((total, item) => total + Number(item.amount || 0), 0);
+      const totalCredits = cardEvents
+        .filter((item) => item.adjustment_type === "credit")
+        .reduce((total, item) => total + Number(item.amount || 0), 0);
+
+      const limit = Number(card.card_limit || 0);
+      const storedValueCard = isStoredValueCardType(card.card_type);
+      const totalAvailableBase = storedValueCard ? limit + totalCredits : limit;
+      const openAmount = storedValueCard
+        ? Math.max(0, totalExpenses)
+        : Math.max(0, totalExpenses - totalPayments);
+      const available = storedValueCard
+        ? Math.max(0, totalAvailableBase - totalExpenses)
+        : Math.max(0, limit - openAmount);
+      const percent = totalAvailableBase > 0 ? Math.min(999, Math.round((openAmount / totalAvailableBase) * 100)) : 0;
+
+      return {
+        ...card,
+        spent: openAmount,
+        total_expenses: totalExpenses,
+        total_payments: totalPayments,
+        total_credits: totalCredits,
+        total_available_base: totalAvailableBase,
+        available,
+        percent,
+        stored_value_card: storedValueCard,
+      };
     });
-  }, [creditCards, monthTransactions]);
+  }, [creditCards, transactions, cardAdjustments, selectedMonth]);
 
   const annualMonthlyData = useMemo(() => {
     return monthOptions.map((option) => {
@@ -2989,6 +3053,57 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     });
   }
 
+  async function handleCardAdjustment({ cardId, adjustmentType, amount, notes }) {
+    const value = toNumber(amount);
+
+    if (!cardId) {
+      showToast("Selecione um cartão para registrar o ajuste.", "warning");
+      return;
+    }
+
+    if (!value || value <= 0) {
+      showToast("Informe um valor maior que zero.", "warning");
+      return;
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+
+    try {
+      const { error } = await supabase.from("card_adjustments").insert({
+        user_id: user.id,
+        card_id: cardId,
+        adjustment_type: adjustmentType,
+        amount: value,
+        date: today,
+        notes: notes || null,
+      });
+
+      if (error) throw error;
+      showToast(adjustmentType === "payment" ? "Pagamento do cartão registrado." : "Crédito/saldo adicionado ao cartão.", "success");
+      await loadAllData();
+    } catch (error) {
+      showToast(`Erro ao registrar ajuste do cartão: ${error.message}`, "error");
+    }
+  }
+
+  function deleteCardAdjustment(id) {
+    openConfirmModal({
+      title: "Excluir ajuste do cartão",
+      message: "Deseja remover este pagamento/recarga? O saldo do cartão será recalculado.",
+      confirmText: "Excluir",
+      cancelText: "Cancelar",
+      danger: true,
+      onConfirm: async () => {
+        const { error } = await supabase.from("card_adjustments").delete().eq("id", id).eq("user_id", user.id);
+        if (error) showToast(`Erro ao excluir ajuste: ${error.message}`, "error");
+        else {
+          showToast("Ajuste removido com sucesso.", "success");
+          await loadAllData();
+        }
+      },
+    });
+  }
+
   async function savePreferences(event) {
     event.preventDefault();
     try {
@@ -3426,7 +3541,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
 
       {page === "limits" && <LimitsPage limitForm={limitForm} setLimitForm={setLimitForm} categoryUsage={categoryUsage} onSubmit={handleLimitSubmit} onDelete={deleteLimit} expenseByCategory={expenseByCategory} />}
 
-      {page === "cards" && <CardsPage cardForm={cardForm} setCardForm={setCardForm} onSubmit={handleCardSubmit} onEdit={editCard} onDelete={deleteCard} cardUsage={cardUsage} transactions={monthTransactions} selectedMonth={selectedMonth} />}
+      {page === "cards" && <CardsPage cardForm={cardForm} setCardForm={setCardForm} onSubmit={handleCardSubmit} onEdit={editCard} onDelete={deleteCard} cardUsage={cardUsage} transactions={transactions} cardAdjustments={cardAdjustments} selectedMonth={selectedMonth} onCardAdjustment={handleCardAdjustment} onDeleteCardAdjustment={deleteCardAdjustment} />}
 
       {page === "recurring" && (
         <RecurringPage
@@ -4658,8 +4773,10 @@ function CardsUsageMini({ cardUsage, setPage }) {
   );
 }
 
-function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsage, transactions, selectedMonth }) {
+function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsage, transactions, cardAdjustments, selectedMonth, onCardAdjustment, onDeleteCardAdjustment }) {
   const [selectedCardId, setSelectedCardId] = useState(cardUsage[0]?.id || "");
+  const [adjustmentAmount, setAdjustmentAmount] = useState("");
+  const [adjustmentNotes, setAdjustmentNotes] = useState("");
 
   useEffect(() => {
     if (!selectedCardId && cardUsage[0]?.id) setSelectedCardId(cardUsage[0].id);
@@ -4671,7 +4788,16 @@ function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsag
   }
 
   const selectedCard = cardUsage.find((card) => card.id === selectedCardId) || cardUsage[0];
-  const invoiceTransactions = selectedCard ? transactions.filter((item) => item.card_id === selectedCard.id && item.type === "expense") : [];
+  const monthEnd = getMonthEndISO(selectedMonth);
+  const invoiceTransactions = selectedCard ? transactions.filter((item) => item.card_id === selectedCard.id && item.type === "expense" && item.date <= monthEnd) : [];
+  const selectedCardAdjustments = selectedCard ? cardAdjustments.filter((item) => item.card_id === selectedCard.id && item.date <= monthEnd) : [];
+
+  function submitAdjustment(adjustmentType, fixedAmount) {
+    const amount = fixedAmount || adjustmentAmount;
+    onCardAdjustment({ cardId: selectedCard?.id, adjustmentType, amount, notes: adjustmentNotes });
+    setAdjustmentAmount("");
+    setAdjustmentNotes("");
+  }
 
   return (
     <main className="grid gap-6 lg:grid-cols-[380px_1fr]">
@@ -4712,7 +4838,18 @@ function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsag
           )) : <EmptyState title="Nenhum cartão cadastrado" text="Cadastre seus cartões para acompanhar limite, fatura e vencimento." />}
         </div>
         {cardUsage.length > 0 && (
-          <CreditCardInvoicePanel card={selectedCard} transactions={invoiceTransactions} selectedMonth={selectedMonth} />
+          <CreditCardInvoicePanel
+            card={selectedCard}
+            transactions={invoiceTransactions}
+            adjustments={selectedCardAdjustments}
+            selectedMonth={selectedMonth}
+            adjustmentAmount={adjustmentAmount}
+            setAdjustmentAmount={setAdjustmentAmount}
+            adjustmentNotes={adjustmentNotes}
+            setAdjustmentNotes={setAdjustmentNotes}
+            onAdjustment={submitAdjustment}
+            onDeleteAdjustment={onDeleteCardAdjustment}
+          />
         )}
       </section>
     </main>
@@ -4736,41 +4873,129 @@ function CreditCardCard({ card, onEdit, onDelete, selected, onSelect }) {
           <button onClick={() => onDelete(card.id)} className="icon-button rounded-xl p-2 hover:text-rose-500"><Trash2 size={17} /></button>
         </div>
       </div>
-      <ProgressBar value={card.spent} max={card.card_limit || 1} danger={card.percent >= 90} />
+      <ProgressBar value={card.spent} max={card.total_available_base || card.card_limit || 1} danger={card.percent >= 90} />
       <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
-        <div><span className="muted-text block">Usado</span><strong>{money.format(card.spent)}</strong></div>
-        <div><span className="muted-text block">Limite</span><strong>{money.format(card.card_limit)}</strong></div>
+        <div><span className="muted-text block">{card.stored_value_card ? "Consumido" : "Aberto"}</span><strong>{money.format(card.spent)}</strong></div>
+        <div><span className="muted-text block">{card.stored_value_card ? "Base + recargas" : "Limite"}</span><strong>{money.format(card.total_available_base || card.card_limit)}</strong></div>
         <div><span className="muted-text block">Livre</span><strong>{money.format(card.available)}</strong></div>
       </div>
     </article>
   );
 }
 
-function CreditCardInvoicePanel({ card, transactions, selectedMonth }) {
+function CreditCardInvoicePanel({
+  card,
+  transactions,
+  adjustments,
+  selectedMonth,
+  adjustmentAmount,
+  setAdjustmentAmount,
+  adjustmentNotes,
+  setAdjustmentNotes,
+  onAdjustment,
+  onDeleteAdjustment,
+}) {
   if (!card) return null;
-  const total = transactions.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+
+  const totalTransactions = transactions.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const paymentLabel = card.stored_value_card ? "Adicionar saldo/recarga" : "Registrar pagamento";
+  const quickActionLabel = card.stored_value_card ? "Adicionar saldo atual" : "Pagar valor em aberto";
+  const quickActionType = card.stored_value_card ? "credit" : "payment";
+
   return (
     <section className="surface-card rounded-[2rem] p-5 shadow-sm">
       <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <h2 className="text-xl font-black">Fatura do cartão {card.name}</h2>
-          <p className="muted-text text-sm">Lançamentos de crédito em {monthLabel(selectedMonth)}.</p>
+          <h2 className="text-xl font-black">Controle do cartão {card.name}</h2>
+          <p className="muted-text text-sm">Movimentações acumuladas até {monthLabel(selectedMonth)}.</p>
         </div>
         <div className="grid gap-1 text-right text-sm">
-          <strong className="text-rose-500">{money.format(total)}</strong>
-          <span className="muted-text">{transactions.length} lançamento(s)</span>
+          <strong className={card.stored_value_card ? "text-emerald-500" : "text-rose-500"}>
+            {card.stored_value_card ? `${money.format(card.available)} disponível` : `${money.format(card.spent)} em aberto`}
+          </strong>
+          <span className="muted-text">{transactions.length} lançamento(s) vinculados</span>
         </div>
       </div>
 
       <div className="mb-5 grid gap-3 md:grid-cols-5">
         <MiniInfo label="Tipo" value={formatCardType(card.card_type)} />
-        <MiniInfo label="Limite" value={money.format(card.card_limit)} />
-        <MiniInfo label="Usado" value={money.format(card.spent)} />
+        <MiniInfo label={card.stored_value_card ? "Base + recargas" : "Limite"} value={money.format(card.total_available_base || card.card_limit)} />
+        <MiniInfo label={card.stored_value_card ? "Consumido" : "Em aberto"} value={money.format(card.spent)} />
         <MiniInfo label="Disponível" value={money.format(card.available)} />
         <MiniInfo label="Vencimento" value={card.due_day ? `Dia ${card.due_day}` : "Sem vencimento"} />
       </div>
 
+      <div className="mb-5 rounded-[1.5rem] border border-emerald-500/20 bg-emerald-500/5 p-4">
+        <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h3 className="font-black">{paymentLabel}</h3>
+            <p className="muted-text text-sm">
+              {card.stored_value_card
+                ? "Use quando receber novo valor no vale/refeição/alimentação ou adicionar saldo ao cartão."
+                : "Use quando pagar a fatura. O valor em aberto será reduzido e continuará correto nos próximos meses."}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => onAdjustment(quickActionType, card.stored_value_card ? adjustmentAmount : card.spent)}
+            className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-black text-white transition hover:bg-emerald-700 disabled:opacity-60"
+            disabled={!card.stored_value_card && card.spent <= 0}
+          >
+            {quickActionLabel}
+          </button>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-[180px_1fr_auto]">
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={adjustmentAmount}
+            onChange={(event) => setAdjustmentAmount(event.target.value)}
+            className="input"
+            placeholder="Valor"
+          />
+          <input
+            value={adjustmentNotes}
+            onChange={(event) => setAdjustmentNotes(event.target.value)}
+            className="input"
+            placeholder="Observação opcional"
+          />
+          <button
+            type="button"
+            onClick={() => onAdjustment(quickActionType)}
+            className="outline-button rounded-2xl px-4 py-2 text-sm font-black"
+          >
+            Registrar
+          </button>
+        </div>
+      </div>
+
+      {adjustments.length > 0 && (
+        <div className="mb-5">
+          <h3 className="mb-3 font-black">Pagamentos e recargas</h3>
+          <div className="space-y-2">
+            {adjustments.map((item) => (
+              <div key={item.id} className="transaction-row flex items-center justify-between gap-3 rounded-2xl p-3">
+                <div>
+                  <strong>{getAdjustmentLabel(item.adjustment_type)}</strong>
+                  <p className="muted-text text-sm">{formatDateBR(item.date)}{item.notes ? ` · ${item.notes}` : ""}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <strong className="text-emerald-500">{money.format(item.amount)}</strong>
+                  <button onClick={() => onDeleteAdjustment(item.id)} className="icon-button rounded-xl p-2 hover:text-rose-500" title="Excluir ajuste"><Trash2 size={16} /></button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="font-black">Lançamentos vinculados</h3>
+          <span className="muted-text text-sm font-semibold">Total lançado: {money.format(totalTransactions)}</span>
+        </div>
         {transactions.length ? transactions.map((item) => (
           <div key={item.id} className="transaction-row flex flex-col gap-2 rounded-2xl p-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -4779,7 +5004,7 @@ function CreditCardInvoicePanel({ card, transactions, selectedMonth }) {
             </div>
             <strong className="text-rose-500">{money.format(item.amount)}</strong>
           </div>
-        )) : <EmptyState title="Fatura vazia" text="Nenhuma despesa de crédito vinculada a este cartão no mês selecionado." />}
+        )) : <EmptyState title="Nenhum lançamento vinculado" text="Vincule lançamentos a este cartão para acompanhar saldo, limite ou fatura acumulada." />}
       </div>
     </section>
   );
