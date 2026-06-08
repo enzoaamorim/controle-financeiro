@@ -77,7 +77,23 @@ const defaultCategories = {
   ],
 };
 
-const paymentMethods = ["Pix", "Débito", "Crédito", "Dinheiro", "Boleto", "Transferência"];
+const paymentMethods = [
+  "Pix",
+  "Dinheiro",
+  "Débito",
+  "Crédito",
+  "Cartão alimentação",
+  "Cartão refeição",
+  "Vale alimentação",
+  "Vale refeição",
+  "Boleto",
+  "Transferência",
+  "Débito automático",
+  "Carteira digital",
+  "Outro",
+];
+
+const cardTypes = ["Crédito", "Débito", "Crédito e Débito", "Alimentação", "Refeição", "Benefício", "Vale transporte", "Pré-pago", "Outro"];
 
 const monthOptions = [
   { value: "01", label: "janeiro" },
@@ -166,6 +182,54 @@ function formatDateBR(isoDate) {
   return `${day}/${month}/${year}`;
 }
 
+function normalizeOptionalCardDay(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number <= 0) return 0;
+  return Math.min(31, Math.max(1, Math.floor(number)));
+}
+
+function formatCardClosingDay(day) {
+  const number = Number(day || 0);
+  return number > 0 ? `Fecha dia ${number}` : "Sem fechamento";
+}
+
+function formatCardDueDay(day) {
+  const number = Number(day || 0);
+  return number > 0 ? `vence dia ${number}` : "sem vencimento";
+}
+
+function formatCardType(type) {
+  return type || "Crédito";
+}
+
+function isCardBasedPaymentMethod(method) {
+  return ["Débito", "Crédito", "Cartão alimentação", "Cartão refeição", "Vale alimentação", "Vale refeição"].includes(method);
+}
+
+function cardMatchesPaymentMethod(card, method) {
+  if (!card?.is_active) return false;
+
+  const type = String(card.card_type || "Crédito").toLowerCase();
+  const isCreditDebit =
+    type.includes("crédito e débito") ||
+    type.includes("credito e debito") ||
+    type.includes("crédito/debito") ||
+    type.includes("credito/debito");
+
+  if (method === "Crédito") return type === "crédito" || type === "credito" || isCreditDebit;
+  if (method === "Débito") return type === "débito" || type === "debito" || isCreditDebit;
+  if (method === "Cartão alimentação" || method === "Vale alimentação") return type.includes("aliment");
+  if (method === "Cartão refeição" || method === "Vale refeição") return type.includes("refei");
+
+  return true;
+}
+
+function getCardOptionsForPaymentMethod(cards, method) {
+  const activeCards = cards.filter((card) => card.is_active);
+  const matchingCards = activeCards.filter((card) => cardMatchesPaymentMethod(card, method));
+  return matchingCards.length ? matchingCards : activeCards;
+}
+
 function maskDateBR(value) {
   const digits = value.replace(new RegExp("[^0-9]", "g"), "").slice(0, 8);
   if (digits.length <= 2) return digits;
@@ -241,8 +305,9 @@ function normalizeCard(row) {
   return {
     ...row,
     card_limit: Number(row.card_limit || 0),
-    closing_day: Number(row.closing_day || 1),
-    due_day: Number(row.due_day || 1),
+    closing_day: normalizeOptionalCardDay(row.closing_day),
+    due_day: normalizeOptionalCardDay(row.due_day),
+    card_type: row?.card_type || "Crédito",
   };
 }
 
@@ -1066,8 +1131,8 @@ function DemoDashboard({ darkMode, setDarkMode, onBack, onCreateAccount }) {
 
   const initialDemoCards = useMemo(
     () => [
-      { id: "card-demo-1", name: "Cartão principal", card_limit: 3000, closing_day: 10, due_day: 15, color: "#10b981", is_active: true },
-      { id: "card-demo-2", name: "Cartão secundário", card_limit: 1800, closing_day: 20, due_day: 28, color: "#3b82f6", is_active: true },
+      { id: "card-demo-1", name: "Cartão principal", card_type: "Crédito e Débito", card_limit: 3000, closing_day: 10, due_day: 15, color: "#10b981", is_active: true },
+      { id: "card-demo-2", name: "Cartão refeição", card_type: "Refeição", card_limit: 1800, closing_day: 0, due_day: 0, color: "#3b82f6", is_active: true },
     ],
     []
   );
@@ -1585,7 +1650,7 @@ function DemoCardsPage({ cards, transactions, selectedCardId, setSelectedCardId,
             <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div>
                 <h2 className="text-2xl font-black">{selectedCard.name}</h2>
-                <p className="muted-text text-sm">Fecha dia {selectedCard.closing_day} · vence dia {selectedCard.due_day}</p>
+                <p className="muted-text text-sm">{formatCardType(selectedCard.card_type)} · {formatCardClosingDay(selectedCard.closing_day)} · {formatCardDueDay(selectedCard.due_day)}</p>
               </div>
               <strong className="text-emerald-400">{money.format(selectedCard.available)} livre</strong>
             </div>
@@ -1950,12 +2015,16 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     notes: "",
   };
 
+  const emptyGoalForm = { title: "", target_amount: "", current_amount: "", deadline: "" };
+  const emptyCardForm = { name: "", card_type: "Crédito", card_limit: "", closing_day: "0", due_day: "0", color: "#059669", is_active: true };
+
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(emptyForm);
 
-  const [goalForm, setGoalForm] = useState({ title: "", target_amount: "", current_amount: "", deadline: "" });
+  const [goalForm, setGoalForm] = useState(emptyGoalForm);
   const [editingGoalId, setEditingGoalId] = useState(null);
+  const [editGoalForm, setEditGoalForm] = useState(emptyGoalForm);
   const [limitForm, setLimitForm] = useState({ category: "Mercado", monthly_limit: "" });
   const [recurringForm, setRecurringForm] = useState({
     type: "expense",
@@ -1967,8 +2036,9 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     is_active: true,
   });
   const [profileName, setProfileName] = useState(userName);
-  const [cardForm, setCardForm] = useState({ name: "", card_limit: "", closing_day: "10", due_day: "15", color: "#059669", is_active: true });
+  const [cardForm, setCardForm] = useState(emptyCardForm);
   const [editingCardId, setEditingCardId] = useState(null);
+  const [editCardForm, setEditCardForm] = useState(emptyCardForm);
   const [preferencesForm, setPreferencesForm] = useState({ monthly_income: "", main_goal: "", currency: "BRL", default_theme: "system" });
 
   useEffect(() => {
@@ -2492,18 +2562,10 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     };
 
     try {
-      if (editingGoalId) {
-        const { error } = await supabase.from("goals").update(payload).eq("id", editingGoalId).eq("user_id", user.id);
-        if (error) throw error;
-        showToast("Meta atualizada com sucesso.");
-      } else {
-        const { error } = await supabase.from("goals").insert(payload);
-        if (error) throw error;
-        showToast("Meta criada com sucesso.");
-      }
-
-      setGoalForm({ title: "", target_amount: "", current_amount: "", deadline: "" });
-      setEditingGoalId(null);
+      const { error } = await supabase.from("goals").insert(payload);
+      if (error) throw error;
+      showToast("Meta criada com sucesso.");
+      setGoalForm(emptyGoalForm);
       await loadAllData();
     } catch (error) {
       showToast(`Erro ao salvar meta: ${error.message}`);
@@ -2512,12 +2574,54 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
 
   function editGoal(goal) {
     setEditingGoalId(goal.id);
-    setGoalForm({
+    setEditGoalForm({
       title: goal.title,
       target_amount: String(goal.target_amount),
       current_amount: String(goal.current_amount),
       deadline: goal.deadline || "",
     });
+  }
+
+  function closeEditGoalModal() {
+    setEditingGoalId(null);
+    setEditGoalForm(emptyGoalForm);
+  }
+
+  async function handleEditGoalSubmit(event) {
+    event.preventDefault();
+    const target = toNumber(editGoalForm.target_amount);
+    const current = toNumber(editGoalForm.current_amount);
+    const title = editGoalForm.title.trim();
+
+    if (!editingGoalId) {
+      showToast("Nenhuma meta selecionada para edição.", "warning");
+      return;
+    }
+
+    if (!title || !target || target <= 0) {
+      showToast("Informe o nome da meta e um valor alvo maior que zero.", "warning");
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from("goals")
+        .update({
+          title,
+          target_amount: target,
+          current_amount: current || 0,
+          deadline: editGoalForm.deadline || null,
+        })
+        .eq("id", editingGoalId)
+        .eq("user_id", user.id);
+
+      if (error) throw error;
+      showToast("Meta atualizada com sucesso.", "success");
+      closeEditGoalModal();
+      await loadAllData();
+    } catch (error) {
+      showToast(`Erro ao atualizar meta: ${error.message}`, "error");
+    }
   }
 
   function deleteGoal(id) {
@@ -2725,46 +2829,84 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     event.preventDefault();
     const name = cardForm.name.trim();
     if (!name) {
-      showToast("Informe o nome do cartão.");
+      showToast("Informe o nome do cartão.", "warning");
       return;
     }
+
     const payload = {
       user_id: user.id,
       name,
       card_limit: toNumber(cardForm.card_limit) || 0,
-      closing_day: Number(cardForm.closing_day) || null,
-      due_day: Number(cardForm.due_day) || null,
+      card_type: cardForm.card_type || "Crédito",
+      closing_day: normalizeOptionalCardDay(cardForm.closing_day) || null,
+      due_day: normalizeOptionalCardDay(cardForm.due_day) || null,
       color: cardForm.color || "#059669",
       is_active: cardForm.is_active,
     };
+
     try {
-      if (editingCardId) {
-        const { error } = await supabase.from("credit_cards").update(payload).eq("id", editingCardId).eq("user_id", user.id);
-        if (error) throw error;
-        showToast("Cartão atualizado.");
-      } else {
-        const { error } = await supabase.from("credit_cards").insert(payload);
-        if (error) throw error;
-        showToast("Cartão criado.");
-      }
-      setCardForm({ name: "", card_limit: "", closing_day: "10", due_day: "15", color: "#059669", is_active: true });
-      setEditingCardId(null);
+      const { error } = await supabase.from("credit_cards").insert(payload);
+      if (error) throw error;
+      showToast("Cartão criado com sucesso.", "success");
+      setCardForm(emptyCardForm);
       await loadAllData();
     } catch (error) {
-      showToast(`Erro ao salvar cartão: ${error.message}`);
+      showToast(`Erro ao salvar cartão: ${error.message}`, "error");
     }
   }
 
   function editCard(card) {
     setEditingCardId(card.id);
-    setCardForm({
+    setEditCardForm({
       name: card.name,
+      card_type: card.card_type || "Crédito",
       card_limit: String(card.card_limit || ""),
-      closing_day: String(card.closing_day || ""),
-      due_day: String(card.due_day || ""),
+      closing_day: String(card.closing_day || 0),
+      due_day: String(card.due_day || 0),
       color: card.color || "#059669",
       is_active: Boolean(card.is_active),
     });
+  }
+
+  function closeEditCardModal() {
+    setEditingCardId(null);
+    setEditCardForm(emptyCardForm);
+  }
+
+  async function handleEditCardSubmit(event) {
+    event.preventDefault();
+    const name = editCardForm.name.trim();
+
+    if (!editingCardId) {
+      showToast("Nenhum cartão selecionado para edição.", "warning");
+      return;
+    }
+
+    if (!name) {
+      showToast("Informe o nome do cartão.", "warning");
+      return;
+    }
+
+    const payload = {
+      user_id: user.id,
+      name,
+      card_limit: toNumber(editCardForm.card_limit) || 0,
+      card_type: editCardForm.card_type || "Crédito",
+      closing_day: normalizeOptionalCardDay(editCardForm.closing_day) || null,
+      due_day: normalizeOptionalCardDay(editCardForm.due_day) || null,
+      color: editCardForm.color || "#059669",
+      is_active: editCardForm.is_active,
+    };
+
+    try {
+      const { error } = await supabase.from("credit_cards").update(payload).eq("id", editingCardId).eq("user_id", user.id);
+      if (error) throw error;
+      showToast("Cartão atualizado com sucesso.", "success");
+      closeEditCardModal();
+      await loadAllData();
+    } catch (error) {
+      showToast(`Erro ao atualizar cartão: ${error.message}`, "error");
+    }
   }
 
   function deleteCard(id) {
@@ -3063,6 +3205,22 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
         creditCards={creditCards}
       />
 
+      <EditGoalModal
+        open={Boolean(editingGoalId)}
+        form={editGoalForm}
+        setForm={setEditGoalForm}
+        onSubmit={handleEditGoalSubmit}
+        onClose={closeEditGoalModal}
+      />
+
+      <EditCardModal
+        open={Boolean(editingCardId)}
+        form={editCardForm}
+        setForm={setEditCardForm}
+        onSubmit={handleEditCardSubmit}
+        onClose={closeEditCardModal}
+      />
+
       <ToastCustom toast={toast} onClose={hideToast} />
       <ConfirmModal modal={confirmModal} onClose={closeConfirmModal} />
 
@@ -3182,11 +3340,11 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
         />
       )}
 
-      {page === "goals" && <GoalsPage goals={goals} goalForm={goalForm} setGoalForm={setGoalForm} editingGoalId={editingGoalId} onSubmit={handleGoalSubmit} onEdit={editGoal} onDelete={deleteGoal} onDeposit={addGoalDeposit} />}
+      {page === "goals" && <GoalsPage goals={goals} goalForm={goalForm} setGoalForm={setGoalForm} onSubmit={handleGoalSubmit} onEdit={editGoal} onDelete={deleteGoal} onDeposit={addGoalDeposit} />}
 
       {page === "limits" && <LimitsPage limitForm={limitForm} setLimitForm={setLimitForm} categoryUsage={categoryUsage} onSubmit={handleLimitSubmit} onDelete={deleteLimit} expenseByCategory={expenseByCategory} />}
 
-      {page === "cards" && <CardsPage cardForm={cardForm} setCardForm={setCardForm} editingCardId={editingCardId} onSubmit={handleCardSubmit} onEdit={editCard} onDelete={deleteCard} cardUsage={cardUsage} transactions={monthTransactions} selectedMonth={selectedMonth} />}
+      {page === "cards" && <CardsPage cardForm={cardForm} setCardForm={setCardForm} onSubmit={handleCardSubmit} onEdit={editCard} onDelete={deleteCard} cardUsage={cardUsage} transactions={monthTransactions} selectedMonth={selectedMonth} />}
 
       {page === "recurring" && (
         <RecurringPage
@@ -3525,6 +3683,125 @@ function TransactionsPage({ form, setForm, resetForm, onSubmit, visibleTransacti
   );
 }
 
+
+function EditGoalModal({ open, form, setForm, onSubmit, onClose }) {
+  if (!open) return null;
+
+  function update(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  return (
+    <div className="edit-modal-backdrop fixed inset-0 z-[70] flex items-center justify-center px-4 py-4 sm:py-6" onClick={onClose} role="dialog" aria-modal="true" aria-label="Editar meta">
+      <div className="edit-modal-shell relative flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-[2.4rem] shadow-2xl sm:max-h-[92vh]" onClick={(event) => event.stopPropagation()}>
+        <div className="edit-modal-hero edit-modal-hero-emerald relative overflow-hidden p-6 sm:p-7">
+          <div className="edit-modal-glow edit-modal-glow-one" />
+          <div className="edit-modal-glow edit-modal-glow-two" />
+          <div className="relative z-10 flex items-start justify-between gap-5">
+            <div className="min-w-0">
+              <div className="edit-chip-income mb-4 inline-flex w-fit items-center gap-2 rounded-full px-3 py-1 text-xs font-black">
+                <Target size={14} /> Edição da meta
+              </div>
+              <h2 className="text-3xl font-black tracking-tight">Editar meta</h2>
+              <p className="mt-2 max-w-xl text-sm font-semibold leading-6 text-slate-300">
+                Ajuste os dados da meta em uma janela separada, sem alterar o formulário de nova meta.
+              </p>
+            </div>
+            <button type="button" onClick={onClose} className="edit-modal-close inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl" aria-label="Fechar edição" title="Fechar">
+              <X size={20} />
+            </button>
+          </div>
+        </div>
+
+        <form onSubmit={onSubmit} className="edit-modal-form flex min-h-0 flex-1 flex-col">
+          <div className="edit-modal-content flex-1 overflow-y-auto px-6 py-5 sm:px-7 sm:py-6">
+            <div className="grid gap-4">
+              <Field label="Nome da meta"><input value={form.title} onChange={(event) => update("title", event.target.value)} className="input input-lg" placeholder="Ex.: Reserva de emergência" /></Field>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Valor alvo"><input type="number" min="0" step="0.01" value={form.target_amount} onChange={(event) => update("target_amount", event.target.value)} className="input input-lg" placeholder="0,00" /></Field>
+                <Field label="Valor atual"><input type="number" min="0" step="0.01" value={form.current_amount} onChange={(event) => update("current_amount", event.target.value)} className="input input-lg" placeholder="0,00" /></Field>
+              </div>
+              <Field label="Prazo"><DateInput value={form.deadline} onChange={(value) => update("deadline", value)} /></Field>
+            </div>
+          </div>
+
+          <div className="edit-modal-footer flex shrink-0 flex-col-reverse gap-3 border-t px-6 py-4 sm:flex-row sm:items-center sm:justify-end sm:px-7 sm:py-5">
+            <button type="button" onClick={onClose} className="outline-button rounded-2xl px-5 py-3 text-sm font-black">Cancelar</button>
+            <button className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-6 py-3 text-sm font-black text-white shadow-sm transition hover:scale-[1.01] hover:bg-emerald-700">
+              <Save size={18} /> Salvar meta
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function EditCardModal({ open, form, setForm, onSubmit, onClose }) {
+  if (!open) return null;
+
+  function update(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  return (
+    <div className="edit-modal-backdrop fixed inset-0 z-[70] flex items-center justify-center px-4 py-4 sm:py-6" onClick={onClose} role="dialog" aria-modal="true" aria-label="Editar cartão">
+      <div className="edit-modal-shell relative flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-[2.4rem] shadow-2xl sm:max-h-[92vh]" onClick={(event) => event.stopPropagation()}>
+        <div className="edit-modal-hero edit-modal-hero-income relative overflow-hidden p-6 sm:p-7">
+          <div className="edit-modal-glow edit-modal-glow-one" />
+          <div className="edit-modal-glow edit-modal-glow-two" />
+          <div className="relative z-10 flex items-start justify-between gap-5">
+            <div className="min-w-0">
+              <div className="edit-chip-income mb-4 inline-flex w-fit items-center gap-2 rounded-full px-3 py-1 text-xs font-black">
+                <CreditCard size={14} /> Edição do cartão
+              </div>
+              <h2 className="text-3xl font-black tracking-tight">Editar cartão</h2>
+              <p className="mt-2 max-w-xl text-sm font-semibold leading-6 text-slate-300">
+                Altere limite, datas e status em uma janela separada, sem misturar com o cadastro de novo cartão.
+              </p>
+            </div>
+            <button type="button" onClick={onClose} className="edit-modal-close inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl" aria-label="Fechar edição" title="Fechar">
+              <X size={20} />
+            </button>
+          </div>
+        </div>
+
+        <form onSubmit={onSubmit} className="edit-modal-form flex min-h-0 flex-1 flex-col">
+          <div className="edit-modal-content flex-1 overflow-y-auto px-6 py-5 sm:px-7 sm:py-6">
+            <div className="grid gap-4">
+              <Field label="Nome do cartão"><input value={form.name} onChange={(event) => update("name", event.target.value)} className="input input-lg" placeholder="Ex.: Nubank" /></Field>
+              <Field label="Tipo do cartão">
+                <select value={form.card_type || "Crédito"} onChange={(event) => update("card_type", event.target.value)} className="input input-lg">
+                  {cardTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+                </select>
+              </Field>
+              <Field label="Limite total"><input type="number" min="0" step="0.01" value={form.card_limit} onChange={(event) => update("card_limit", event.target.value)} className="input input-lg" placeholder="0,00" /></Field>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Fechamento"><input type="number" min="0" max="31" value={form.closing_day} onChange={(event) => update("closing_day", event.target.value)} className="input input-lg" placeholder="0" /></Field>
+                <Field label="Vencimento"><input type="number" min="0" max="31" value={form.due_day} onChange={(event) => update("due_day", event.target.value)} className="input input-lg" placeholder="0" /></Field>
+              </div>
+              <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-3 text-xs font-bold leading-5 text-emerald-400">
+                Use 0 para cartão sem fechamento ou sem vencimento definido.
+              </div>
+              <Field label="Cor"><input type="color" value={form.color} onChange={(event) => update("color", event.target.value)} className="input h-14" /></Field>
+              <label className="field-shell flex items-center gap-3 rounded-2xl p-3 text-sm font-bold">
+                <input type="checkbox" checked={form.is_active} onChange={(event) => update("is_active", event.target.checked)} /> Cartão ativo
+              </label>
+            </div>
+          </div>
+
+          <div className="edit-modal-footer flex shrink-0 flex-col-reverse gap-3 border-t px-6 py-4 sm:flex-row sm:items-center sm:justify-end sm:px-7 sm:py-5">
+            <button type="button" onClick={onClose} className="outline-button rounded-2xl px-5 py-3 text-sm font-black">Cancelar</button>
+            <button className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-6 py-3 text-sm font-black text-white shadow-sm transition hover:scale-[1.01] hover:bg-emerald-700">
+              <Save size={18} /> Salvar cartão
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function EditTransactionModal({ open, form, setForm, onSubmit, onClose, creditCards = [] }) {
   if (!open) return null;
 
@@ -3544,11 +3821,11 @@ function EditTransactionModal({ open, form, setForm, onSubmit, onClose, creditCa
           next.is_installment = false;
           next.installments = "1";
           next.card_id = "";
-          if (next.method === "Crédito") next.method = "Pix";
+          if (isCardBasedPaymentMethod(next.method)) next.method = "Pix";
         }
       }
 
-      if (field === "method" && value !== "Crédito") {
+      if (field === "method" && !isCardBasedPaymentMethod(value)) {
         next.card_id = "";
         next.is_installment = false;
         next.installments = "1";
@@ -3658,11 +3935,13 @@ function EditTransactionModal({ open, form, setForm, onSubmit, onClose, creditCa
               </Field>
             </div>
 
-            {form.method === "Crédito" && form.type === "expense" && (
-              <Field label="Cartão de crédito">
+            {isCardBasedPaymentMethod(form.method) && form.type === "expense" && (
+              <Field label="Cartão vinculado">
                 <select value={form.card_id} onChange={(event) => update("card_id", event.target.value)} className="input input-lg">
                   <option value="">Sem cartão vinculado</option>
-                  {creditCards.filter((card) => card.is_active).map((card) => <option key={card.id} value={card.id}>{card.name}</option>)}
+                  {getCardOptionsForPaymentMethod(creditCards, form.method).map((card) => (
+                    <option key={card.id} value={card.id}>{card.name} · {formatCardType(card.card_type)}</option>
+                  ))}
                 </select>
               </Field>
             )}
@@ -3762,11 +4041,11 @@ function TransactionForm({ form, setForm, onSubmit, editingId, creditCards = [] 
           next.is_installment = false;
           next.installments = "1";
           next.card_id = "";
-          if (next.method === "Crédito") next.method = "Pix";
+          if (isCardBasedPaymentMethod(next.method)) next.method = "Pix";
         }
       }
 
-      if (field === "method" && value !== "Crédito") {
+      if (field === "method" && !isCardBasedPaymentMethod(value)) {
         next.card_id = "";
         next.is_installment = false;
         next.installments = "1";
@@ -3807,11 +4086,13 @@ function TransactionForm({ form, setForm, onSubmit, editingId, creditCards = [] 
         </select>
       </Field>
 
-      {form.method === "Crédito" && form.type === "expense" && (
-        <Field label="Cartão de crédito">
+      {isCardBasedPaymentMethod(form.method) && form.type === "expense" && (
+        <Field label="Cartão vinculado">
           <select value={form.card_id} onChange={(event) => update("card_id", event.target.value)} className="input">
             <option value="">Sem cartão vinculado</option>
-            {creditCards.filter((card) => card.is_active).map((card) => <option key={card.id} value={card.id}>{card.name}</option>)}
+            {getCardOptionsForPaymentMethod(creditCards, form.method).map((card) => (
+              <option key={card.id} value={card.id}>{card.name} · {formatCardType(card.card_type)}</option>
+            ))}
           </select>
         </Field>
       )}
@@ -3844,7 +4125,7 @@ function TransactionForm({ form, setForm, onSubmit, editingId, creditCards = [] 
   );
 }
 
-function GoalsPage({ goals, goalForm, setGoalForm, editingGoalId, onSubmit, onEdit, onDelete, onDeposit }) {
+function GoalsPage({ goals, goalForm, setGoalForm, onSubmit, onEdit, onDelete, onDeposit }) {
   function update(field, value) {
     setGoalForm((current) => ({ ...current, [field]: value }));
   }
@@ -3852,14 +4133,14 @@ function GoalsPage({ goals, goalForm, setGoalForm, editingGoalId, onSubmit, onEd
   return (
     <main className="grid gap-6 lg:grid-cols-[380px_1fr]">
       <section className="surface-card rounded-[2rem] p-5 shadow-sm">
-        <h2 className="text-xl font-black">{editingGoalId ? "Editar meta" : "Nova meta"}</h2>
+        <h2 className="text-xl font-black">Nova meta</h2>
         <p className="muted-text mb-5 text-sm">Planeje seus objetivos financeiros.</p>
         <form onSubmit={onSubmit} className="space-y-4">
           <Field label="Nome da meta"><input value={goalForm.title} onChange={(event) => update("title", event.target.value)} className="input" placeholder="Ex.: Reserva de emergência" /></Field>
           <Field label="Valor alvo"><input type="number" min="0" step="0.01" value={goalForm.target_amount} onChange={(event) => update("target_amount", event.target.value)} className="input" placeholder="0,00" /></Field>
           <Field label="Valor atual"><input type="number" min="0" step="0.01" value={goalForm.current_amount} onChange={(event) => update("current_amount", event.target.value)} className="input" placeholder="0,00" /></Field>
           <Field label="Prazo"><DateInput value={goalForm.deadline} onChange={(value) => update("deadline", value)} /></Field>
-          <button className="w-full rounded-2xl bg-emerald-600 px-4 py-3 font-black text-white">{editingGoalId ? "Salvar meta" : "Criar meta"}</button>
+          <button className="w-full rounded-2xl bg-emerald-600 px-4 py-3 font-black text-white">Criar meta</button>
         </form>
       </section>
 
@@ -3869,6 +4150,7 @@ function GoalsPage({ goals, goalForm, setGoalForm, editingGoalId, onSubmit, onEd
     </main>
   );
 }
+
 
 function GoalCard({ goal, onEdit, onDelete, onDeposit }) {
   const [depositValue, setDepositValue] = useState("");
@@ -4126,7 +4408,7 @@ function CardsUsageMini({ cardUsage, setPage }) {
   );
 }
 
-function CardsPage({ cardForm, setCardForm, editingCardId, onSubmit, onEdit, onDelete, cardUsage, transactions, selectedMonth }) {
+function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsage, transactions, selectedMonth }) {
   const [selectedCardId, setSelectedCardId] = useState(cardUsage[0]?.id || "");
 
   useEffect(() => {
@@ -4144,20 +4426,26 @@ function CardsPage({ cardForm, setCardForm, editingCardId, onSubmit, onEdit, onD
   return (
     <main className="grid gap-6 lg:grid-cols-[380px_1fr]">
       <section className="surface-card rounded-[2rem] p-5 shadow-sm">
-        <h2 className="text-xl font-black">{editingCardId ? "Editar cartão" : "Novo cartão"}</h2>
+        <h2 className="text-xl font-black">Novo cartão</h2>
         <p className="muted-text mb-5 text-sm">Controle limite, fechamento e vencimento.</p>
         <form onSubmit={onSubmit} className="space-y-4">
           <Field label="Nome do cartão"><input value={cardForm.name} onChange={(event) => update("name", event.target.value)} className="input" placeholder="Ex.: Nubank" /></Field>
+          <Field label="Tipo do cartão">
+            <select value={cardForm.card_type || "Crédito"} onChange={(event) => update("card_type", event.target.value)} className="input">
+              {cardTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+            </select>
+          </Field>
           <Field label="Limite total"><input type="number" min="0" step="0.01" value={cardForm.card_limit} onChange={(event) => update("card_limit", event.target.value)} className="input" placeholder="0,00" /></Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Fechamento"><input type="number" min="1" max="31" value={cardForm.closing_day} onChange={(event) => update("closing_day", event.target.value)} className="input" /></Field>
-            <Field label="Vencimento"><input type="number" min="1" max="31" value={cardForm.due_day} onChange={(event) => update("due_day", event.target.value)} className="input" /></Field>
+            <Field label="Fechamento"><input type="number" min="0" max="31" value={cardForm.closing_day} onChange={(event) => update("closing_day", event.target.value)} className="input" placeholder="0" /></Field>
+            <Field label="Vencimento"><input type="number" min="0" max="31" value={cardForm.due_day} onChange={(event) => update("due_day", event.target.value)} className="input" placeholder="0" /></Field>
           </div>
+          <p className="muted-text -mt-2 text-xs font-semibold">Use 0 para deixar sem fechamento ou sem vencimento.</p>
           <Field label="Cor"><input type="color" value={cardForm.color} onChange={(event) => update("color", event.target.value)} className="input h-14" /></Field>
           <label className="field-shell flex items-center gap-3 rounded-2xl p-3 text-sm font-bold">
             <input type="checkbox" checked={cardForm.is_active} onChange={(event) => update("is_active", event.target.checked)} /> Cartão ativo
           </label>
-          <button className="w-full rounded-2xl bg-emerald-600 px-4 py-3 font-black text-white">{editingCardId ? "Salvar cartão" : "Criar cartão"}</button>
+          <button className="w-full rounded-2xl bg-emerald-600 px-4 py-3 font-black text-white">Criar cartão</button>
         </form>
       </section>
       <section className="grid gap-6">
@@ -4181,6 +4469,7 @@ function CardsPage({ cardForm, setCardForm, editingCardId, onSubmit, onEdit, onD
   );
 }
 
+
 function CreditCardCard({ card, onEdit, onDelete, selected, onSelect }) {
   return (
     <article className={classNames("surface-card rounded-[2rem] p-5 shadow-sm", selected && "selected-card")}>
@@ -4188,7 +4477,8 @@ function CreditCardCard({ card, onEdit, onDelete, selected, onSelect }) {
         <div>
           <div className="mb-2 h-3 w-12 rounded-full" style={{ background: card.color || "#059669" }} />
           <h3 className="text-lg font-black">{card.name}</h3>
-          <p className="muted-text text-sm">Fecha dia {card.closing_day || "-"} · vence dia {card.due_day || "-"}</p>
+          <span className="mt-1 inline-flex rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-black text-emerald-400">{formatCardType(card.card_type)}</span>
+          <p className="muted-text mt-2 text-sm">{formatCardClosingDay(card.closing_day)} · {formatCardDueDay(card.due_day)}</p>
         </div>
         <div className="flex gap-1">
           <button onClick={onSelect} className="icon-button rounded-xl p-2" title="Ver fatura"><Eye size={17} /></button>
@@ -4222,11 +4512,12 @@ function CreditCardInvoicePanel({ card, transactions, selectedMonth }) {
         </div>
       </div>
 
-      <div className="mb-5 grid gap-3 md:grid-cols-4">
+      <div className="mb-5 grid gap-3 md:grid-cols-5">
+        <MiniInfo label="Tipo" value={formatCardType(card.card_type)} />
         <MiniInfo label="Limite" value={money.format(card.card_limit)} />
         <MiniInfo label="Usado" value={money.format(card.spent)} />
         <MiniInfo label="Disponível" value={money.format(card.available)} />
-        <MiniInfo label="Vencimento" value={`Dia ${card.due_day || "-"}`} />
+        <MiniInfo label="Vencimento" value={card.due_day ? `Dia ${card.due_day}` : "Sem vencimento"} />
       </div>
 
       <div className="space-y-3">
@@ -4919,6 +5210,31 @@ function GlobalStyles() {
       .input-lg { min-height: 3.05rem; }
       .edit-installment-card { background: var(--surface-2); border: 1px solid var(--border); }
       .edit-modal-footer { background: color-mix(in srgb, var(--surface) 96%, transparent); border-color: var(--border); backdrop-filter: blur(14px); box-shadow: 0 -18px 36px rgba(2, 6, 23, 0.14); }
+      @supports (height: 100dvh) {
+        .edit-modal-shell { max-height: calc(100dvh - 1.5rem); }
+      }
+      @media (max-width: 640px) {
+        .edit-modal-backdrop {
+          align-items: flex-end;
+          padding: max(0.75rem, env(safe-area-inset-top)) 0.75rem max(0.75rem, env(safe-area-inset-bottom)) 0.75rem;
+          overflow: hidden;
+        }
+        .edit-modal-shell {
+          width: 100%;
+          max-height: calc(100dvh - max(1.5rem, env(safe-area-inset-top)) - max(1.5rem, env(safe-area-inset-bottom)));
+          border-radius: 1.7rem;
+        }
+        .edit-modal-hero { padding: 1.05rem 1.1rem; }
+        .edit-modal-hero h2 { font-size: 1.7rem; line-height: 1.1; }
+        .edit-modal-hero p { font-size: 0.82rem; line-height: 1.55; }
+        .edit-modal-close { height: 2.65rem; width: 2.65rem; border-radius: 1rem; }
+        .edit-summary-card { padding: 0.85rem; }
+        .edit-modal-content { padding: 1rem; }
+        .edit-modal-footer {
+          padding: 0.85rem 1rem calc(0.85rem + env(safe-area-inset-bottom));
+        }
+        .edit-modal-footer button { width: 100%; min-height: 3.15rem; }
+      }
       .transaction-row { background: var(--surface-2); border: 1px solid var(--border); color: var(--text); }
       .empty-state { border: 1px dashed var(--border); color: var(--muted); }
       .metric-emerald { background: rgba(16, 185, 129, 0.12); color: #059669; }
