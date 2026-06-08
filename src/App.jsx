@@ -2017,6 +2017,15 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
 
   const emptyGoalForm = { title: "", target_amount: "", current_amount: "", deadline: "" };
   const emptyCardForm = { name: "", card_type: "Crédito", card_limit: "", closing_day: "0", due_day: "0", color: "#059669", is_active: true };
+  const emptyRecurringForm = {
+    type: "expense",
+    description: "",
+    category: "Mercado",
+    method: "Pix",
+    amount: "",
+    day_of_month: "5",
+    is_active: true,
+  };
 
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState(null);
@@ -2026,19 +2035,14 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
   const [editingGoalId, setEditingGoalId] = useState(null);
   const [editGoalForm, setEditGoalForm] = useState(emptyGoalForm);
   const [limitForm, setLimitForm] = useState({ category: "Mercado", monthly_limit: "" });
-  const [recurringForm, setRecurringForm] = useState({
-    type: "expense",
-    description: "",
-    category: "Mercado",
-    method: "Pix",
-    amount: "",
-    day_of_month: "5",
-    is_active: true,
-  });
+  const [recurringForm, setRecurringForm] = useState(emptyRecurringForm);
+  const [editingRecurringId, setEditingRecurringId] = useState(null);
+  const [editRecurringForm, setEditRecurringForm] = useState(emptyRecurringForm);
   const [profileName, setProfileName] = useState(userName);
   const [cardForm, setCardForm] = useState(emptyCardForm);
   const [editingCardId, setEditingCardId] = useState(null);
   const [editCardForm, setEditCardForm] = useState(emptyCardForm);
+  const [selectedTransaction, setSelectedTransaction] = useState(null);
   const [preferencesForm, setPreferencesForm] = useState({ monthly_income: "", main_goal: "", currency: "BRL", default_theme: "system" });
 
   useEffect(() => {
@@ -2737,11 +2741,69 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
       });
 
       if (error) throw error;
-      setRecurringForm({ type: "expense", description: "", category: "Mercado", method: "Pix", amount: "", day_of_month: "5", is_active: true });
+      setRecurringForm(emptyRecurringForm);
       showToast("Item recorrente criado.");
       await loadAllData();
     } catch (error) {
       showToast(`Erro ao salvar recorrência: ${error.message}`);
+    }
+  }
+
+  function editRecurring(item) {
+    setEditingRecurringId(item.id);
+    setEditRecurringForm({
+      type: item.type || "expense",
+      description: item.description || "",
+      category: item.category || defaultCategories[item.type || "expense"][0],
+      method: item.method || "Pix",
+      amount: String(item.amount || ""),
+      day_of_month: String(item.day_of_month || "5"),
+      is_active: Boolean(item.is_active),
+    });
+  }
+
+  function closeEditRecurringModal() {
+    setEditingRecurringId(null);
+    setEditRecurringForm(emptyRecurringForm);
+  }
+
+  async function handleEditRecurringSubmit(event) {
+    event.preventDefault();
+    const amount = toNumber(editRecurringForm.amount);
+    const day = Number(editRecurringForm.day_of_month);
+    const description = editRecurringForm.description.trim();
+
+    if (!editingRecurringId) {
+      showToast("Nenhum item fixo selecionado para edição.", "warning");
+      return;
+    }
+
+    if (!description || !amount || amount <= 0 || day < 1 || day > 31) {
+      showToast("Preencha descrição, valor e dia válido entre 1 e 31.", "warning");
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from("recurring_items")
+        .update({
+          type: editRecurringForm.type,
+          description,
+          category: editRecurringForm.category,
+          method: editRecurringForm.method,
+          amount,
+          day_of_month: day,
+          is_active: editRecurringForm.is_active,
+        })
+        .eq("id", editingRecurringId)
+        .eq("user_id", user.id);
+
+      if (error) throw error;
+      showToast("Item fixo atualizado com sucesso.", "success");
+      closeEditRecurringModal();
+      await loadAllData();
+    } catch (error) {
+      showToast(`Erro ao atualizar item fixo: ${error.message}`, "error");
     }
   }
 
@@ -3205,6 +3267,17 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
         creditCards={creditCards}
       />
 
+      <TransactionDetailsModal
+        open={Boolean(selectedTransaction)}
+        transaction={selectedTransaction}
+        creditCards={creditCards}
+        onClose={() => setSelectedTransaction(null)}
+        onEdit={(item) => {
+          setSelectedTransaction(null);
+          handleEditTransaction(item);
+        }}
+      />
+
       <EditGoalModal
         open={Boolean(editingGoalId)}
         form={editGoalForm}
@@ -3219,6 +3292,14 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
         setForm={setEditCardForm}
         onSubmit={handleEditCardSubmit}
         onClose={closeEditCardModal}
+      />
+
+      <EditRecurringModal
+        open={Boolean(editingRecurringId)}
+        form={editRecurringForm}
+        setForm={setEditRecurringForm}
+        onSubmit={handleEditRecurringSubmit}
+        onClose={closeEditRecurringModal}
       />
 
       <ToastCustom toast={toast} onClose={hideToast} />
@@ -3335,6 +3416,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
           onEdit={handleEditTransaction}
           onDelete={handleDeleteTransaction}
           onDuplicate={handleDuplicateTransaction}
+          onView={setSelectedTransaction}
           exportCSV={exportCSV}
           creditCards={creditCards}
         />
@@ -3353,6 +3435,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
           recurringItems={recurringItems}
           onSubmit={handleRecurringSubmit}
           onToggle={toggleRecurring}
+          onEdit={editRecurring}
           onDelete={deleteRecurring}
           onGenerate={generateRecurringForMonth}
           selectedMonth={selectedMonth}
@@ -3623,7 +3706,7 @@ function DashboardOverview({ summary, expenseByCategory, dailyFlow, monthlyCompa
   );
 }
 
-function TransactionsPage({ form, setForm, resetForm, onSubmit, visibleTransactions, allCategories, query, setQuery, categoryFilter, setCategoryFilter, typeFilter, setTypeFilter, cardFilter, setCardFilter, sortBy, setSortBy, onEdit, onDelete, onDuplicate, exportCSV, creditCards }) {
+function TransactionsPage({ form, setForm, resetForm, onSubmit, visibleTransactions, allCategories, query, setQuery, categoryFilter, setCategoryFilter, typeFilter, setTypeFilter, cardFilter, setCardFilter, sortBy, setSortBy, onEdit, onDelete, onDuplicate, onView, exportCSV, creditCards }) {
   return (
     <main className="grid gap-6 lg:grid-cols-[380px_1fr]">
       <section className="surface-card rounded-[2rem] p-5 shadow-sm">
@@ -3676,13 +3759,83 @@ function TransactionsPage({ form, setForm, resetForm, onSubmit, visibleTransacti
         </div>
 
         <div className="space-y-3">
-          {visibleTransactions.length ? visibleTransactions.map((item) => <TransactionRow key={item.id} item={item} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} />) : <EmptyState title="Nenhum lançamento encontrado" text="Tente limpar filtros ou cadastrar uma nova receita/despesa." />}
+          {visibleTransactions.length ? visibleTransactions.map((item) => <TransactionRow key={item.id} item={item} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} onView={onView} creditCards={creditCards} />) : <EmptyState title="Nenhum lançamento encontrado" text="Tente limpar filtros ou cadastrar uma nova receita/despesa." />}
         </div>
       </section>
     </main>
   );
 }
 
+
+function TransactionDetailsModal({ open, transaction, creditCards = [], onClose, onEdit }) {
+  if (!open || !transaction) return null;
+
+  const isIncome = transaction.type === "income";
+  const typeLabel = isIncome ? "Receita" : "Despesa";
+  const card = creditCards.find((item) => item.id === transaction.card_id);
+  const hasNotes = Boolean(String(transaction.notes || "").trim());
+
+  return (
+    <div className="edit-modal-backdrop fixed inset-0 z-[70] flex items-center justify-center px-4 py-4 sm:py-6" onClick={onClose} role="dialog" aria-modal="true" aria-label="Detalhes do lançamento">
+      <div className="edit-modal-shell transaction-details-shell relative flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-[2.4rem] shadow-2xl sm:max-h-[92vh]" onClick={(event) => event.stopPropagation()}>
+        <div className={classNames("edit-modal-hero relative overflow-hidden p-6 sm:p-7", isIncome ? "edit-modal-hero-emerald" : "edit-modal-hero-rose")}>
+          <div className="edit-modal-glow edit-modal-glow-one" />
+          <div className="edit-modal-glow edit-modal-glow-two" />
+
+          <div className="relative z-10 flex items-start justify-between gap-5">
+            <div className="min-w-0">
+              <div className={classNames("mb-4 inline-flex w-fit items-center gap-2 rounded-full px-3 py-1 text-xs font-black", isIncome ? "edit-chip-income" : "edit-chip-expense")}>
+                <FileText size={14} /> Detalhes do lançamento
+              </div>
+              <h2 className="break-words text-3xl font-black tracking-tight">{transaction.description}</h2>
+              <p className="mt-2 max-w-xl text-sm font-semibold leading-6 text-slate-300">
+                Confira as informações salvas neste lançamento sem abrir o formulário de edição.
+              </p>
+            </div>
+
+            <button type="button" onClick={onClose} className="edit-modal-close inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl" aria-label="Fechar detalhes" title="Fechar">
+              <X size={20} />
+            </button>
+          </div>
+        </div>
+
+        <div className="edit-modal-form flex min-h-0 flex-1 flex-col">
+          <div className="edit-modal-content flex-1 overflow-y-auto px-6 py-5 sm:px-7 sm:py-6">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <DetailInfo label="Categoria" value={transaction.category || "Não informada"} />
+              <DetailInfo label="Forma de pagamento" value={transaction.method || "Não informada"} />
+              <DetailInfo label="Cartão vinculado" value={card ? `${card.name} · ${formatCardType(card.card_type)}` : "Sem cartão vinculado"} />
+              <DetailInfo label="Parcela" value={transaction.installment_total ? `${transaction.installment_number}/${transaction.installment_total}` : "Não parcelado"} />
+            </div>
+
+            <div className="mt-4 rounded-[1.5rem] border border-slate-500/15 bg-slate-500/10 p-4">
+              <p className="mb-2 flex items-center gap-2 text-sm font-black"><FileText size={16} /> Observações</p>
+              <p className="muted-text whitespace-pre-wrap text-sm font-semibold leading-6">
+                {hasNotes ? transaction.notes : "Nenhuma observação adicionada neste lançamento."}
+              </p>
+            </div>
+          </div>
+
+          <div className="edit-modal-footer flex shrink-0 flex-col-reverse gap-3 border-t px-6 py-4 sm:flex-row sm:items-center sm:justify-end sm:px-7 sm:py-5">
+            <button type="button" onClick={onClose} className="outline-button rounded-2xl px-5 py-3 text-sm font-black">Fechar</button>
+            <button type="button" onClick={() => onEdit?.(transaction)} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-6 py-3 text-sm font-black text-white shadow-sm transition hover:scale-[1.01] hover:bg-emerald-700">
+              <Edit3 size={18} /> Editar lançamento
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DetailInfo({ label, value }) {
+  return (
+    <div className="transaction-detail-info rounded-2xl p-4">
+      <p className="muted-text text-xs font-black uppercase tracking-wide">{label}</p>
+      <strong className="mt-1 block break-words text-sm">{value}</strong>
+    </div>
+  );
+}
 
 function EditGoalModal({ open, form, setForm, onSubmit, onClose }) {
   if (!open) return null;
@@ -3873,23 +4026,6 @@ function EditTransactionModal({ open, form, setForm, onSubmit, onClose, creditCa
             </button>
           </div>
 
-          <div className="relative z-10 mt-6 grid gap-3 sm:grid-cols-3">
-            <div className="edit-summary-card rounded-2xl p-4">
-              <span className="block text-xs font-black uppercase tracking-wide text-slate-400">Tipo atual</span>
-              <strong className={classNames("mt-1 flex items-center gap-2 text-lg", isIncome ? "text-emerald-300" : "text-rose-300")}>
-                {isIncome ? <ArrowUpCircle size={18} /> : <ArrowDownCircle size={18} />}
-                {typeLabel}
-              </strong>
-            </div>
-            <div className="edit-summary-card rounded-2xl p-4">
-              <span className="block text-xs font-black uppercase tracking-wide text-slate-400">Valor</span>
-              <strong className="mt-1 block text-lg">{form.amount ? money.format(toNumber(form.amount)) : "R$ 0,00"}</strong>
-            </div>
-            <div className="edit-summary-card rounded-2xl p-4">
-              <span className="block text-xs font-black uppercase tracking-wide text-slate-400">Data</span>
-              <strong className="mt-1 block text-lg">{form.date ? formatDateBR(form.date) : "Sem data"}</strong>
-            </div>
-          </div>
         </div>
 
         <form onSubmit={onSubmit} className="edit-modal-form flex min-h-0 flex-1 flex-col">
@@ -4242,7 +4378,7 @@ function LimitCard({ item, onDelete }) {
   );
 }
 
-function RecurringPage({ recurringForm, setRecurringForm, recurringItems, onSubmit, onToggle, onDelete, onGenerate, selectedMonth }) {
+function RecurringPage({ recurringForm, setRecurringForm, recurringItems, onSubmit, onToggle, onEdit, onDelete, onGenerate, selectedMonth }) {
   function update(field, value) {
     setRecurringForm((current) => ({ ...current, [field]: value }));
   }
@@ -4285,14 +4421,14 @@ function RecurringPage({ recurringForm, setRecurringForm, recurringItems, onSubm
           <button onClick={onGenerate} className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-black text-white">Gerar mês</button>
         </div>
         <div className="space-y-3">
-          {recurringItems.length ? recurringItems.map((item) => <RecurringRow key={item.id} item={item} onToggle={onToggle} onDelete={onDelete} />) : <EmptyState text="Nenhum item recorrente cadastrado." />}
+          {recurringItems.length ? recurringItems.map((item) => <RecurringRow key={item.id} item={item} onToggle={onToggle} onEdit={onEdit} onDelete={onDelete} />) : <EmptyState text="Nenhum item recorrente cadastrado." />}
         </div>
       </section>
     </main>
   );
 }
 
-function RecurringRow({ item, onToggle, onDelete }) {
+function RecurringRow({ item, onToggle, onEdit, onDelete }) {
   return (
     <article className="transaction-row flex flex-col gap-3 rounded-2xl p-4 sm:flex-row sm:items-center sm:justify-between">
       <div>
@@ -4302,9 +4438,123 @@ function RecurringRow({ item, onToggle, onDelete }) {
       <div className="flex items-center gap-3">
         <strong className={item.type === "income" ? "text-emerald-500" : "text-rose-500"}>{item.type === "income" ? "+" : "-"} {money.format(item.amount)}</strong>
         <button onClick={() => onToggle(item)} className="outline-button rounded-xl px-3 py-2 text-sm font-bold">{item.is_active ? "Ativo" : "Inativo"}</button>
-        <button onClick={() => onDelete(item.id)} className="icon-button rounded-xl p-2 hover:text-rose-500"><Trash2 size={17} /></button>
+        <button onClick={() => onEdit(item)} className="icon-button rounded-xl p-2 hover:text-blue-500" title="Editar item fixo"><Edit3 size={17} /></button>
+        <button onClick={() => onDelete(item.id)} className="icon-button rounded-xl p-2 hover:text-rose-500" title="Excluir item fixo"><Trash2 size={17} /></button>
       </div>
     </article>
+  );
+}
+
+
+function EditRecurringModal({ open, form, setForm, onSubmit, onClose }) {
+  if (!open) return null;
+
+  const isIncome = form.type === "income";
+  const typeLabel = isIncome ? "Receita fixa" : "Despesa fixa";
+  const typeTone = isIncome ? "emerald" : "rose";
+
+  function update(field, value) {
+    setForm((current) => {
+      const next = { ...current, [field]: value };
+      if (field === "type") {
+        const categories = defaultCategories[value];
+        next.category = categories.includes(current.category) ? current.category : categories[0];
+      }
+      return next;
+    });
+  }
+
+  return (
+    <div
+      className="edit-modal-backdrop fixed inset-0 z-[70] flex items-center justify-center px-4 py-4 sm:py-6"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Editar item fixo"
+    >
+      <div
+        className="edit-modal-shell relative flex max-h-[calc(100dvh-2rem)] w-full max-w-3xl flex-col overflow-hidden rounded-[2.4rem] shadow-2xl sm:max-h-[92dvh]"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className={classNames("edit-modal-hero relative overflow-hidden p-6 sm:p-7", `edit-modal-hero-${typeTone}`)}>
+          <div className="edit-modal-glow edit-modal-glow-one" />
+          <div className="edit-modal-glow edit-modal-glow-two" />
+
+          <div className="relative z-10 flex items-start justify-between gap-5">
+            <div className="min-w-0">
+              <div className={classNames("mb-4 inline-flex w-fit items-center gap-2 rounded-full px-3 py-1 text-xs font-black", isIncome ? "edit-chip-income" : "edit-chip-expense")}>
+                <Repeat size={14} /> Edição de item fixo
+              </div>
+              <h2 className="text-3xl font-black tracking-tight">Editar item fixo</h2>
+              <p className="mt-2 max-w-xl text-sm font-semibold leading-6 text-slate-300">
+                Ajuste a recorrência mensal sem alterar o formulário de novo item fixo.
+              </p>
+            </div>
+
+            <button type="button" onClick={onClose} className="edit-modal-close inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl" aria-label="Fechar edição" title="Fechar">
+              <X size={20} />
+            </button>
+          </div>
+        </div>
+
+        <form onSubmit={onSubmit} className="edit-modal-form flex min-h-0 flex-1 flex-col">
+          <div className="edit-modal-content flex-1 overflow-y-auto px-6 py-5 sm:px-7 sm:py-6">
+            <div className="mb-6 rounded-[1.75rem] border border-slate-500/15 bg-slate-500/10 p-4">
+              <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <p className="text-sm font-black">Tipo do item fixo</p>
+                  <p className="muted-text text-xs font-semibold">Defina se essa recorrência entra como receita ou despesa mensal.</p>
+                </div>
+                <span className={classNames("rounded-full px-3 py-1 text-xs font-black", isIncome ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300")}>
+                  {typeLabel}
+                </span>
+              </div>
+              <TypeSwitch value={form.type} onChange={(value) => update("type", value)} />
+            </div>
+
+            <div className="grid gap-4">
+              <Field label="Descrição">
+                <input value={form.description} onChange={(event) => update("description", event.target.value)} placeholder="Ex.: Internet, salário, academia..." className="input input-lg" />
+              </Field>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Valor">
+                  <input type="number" min="0" step="0.01" value={form.amount} onChange={(event) => update("amount", event.target.value)} placeholder="0,00" className="input input-lg" />
+                </Field>
+                <Field label="Dia do mês">
+                  <input type="number" min="1" max="31" value={form.day_of_month} onChange={(event) => update("day_of_month", event.target.value)} className="input input-lg" />
+                </Field>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Categoria">
+                  <select value={form.category} onChange={(event) => update("category", event.target.value)} className="input input-lg">
+                    {defaultCategories[form.type].map((category) => <option key={category}>{category}</option>)}
+                  </select>
+                </Field>
+
+                <Field label="Forma de pagamento">
+                  <select value={form.method} onChange={(event) => update("method", event.target.value)} className="input input-lg">
+                    {paymentMethods.map((method) => <option key={method}>{method}</option>)}
+                  </select>
+                </Field>
+              </div>
+
+              <label className="field-shell flex items-center gap-3 rounded-2xl p-3 text-sm font-bold">
+                <input type="checkbox" checked={form.is_active} onChange={(event) => update("is_active", event.target.checked)} /> Item fixo ativo
+              </label>
+            </div>
+          </div>
+
+          <div className="edit-modal-footer flex shrink-0 flex-col-reverse gap-3 border-t px-6 py-4 sm:flex-row sm:items-center sm:justify-end sm:px-7 sm:py-5">
+            <button type="button" onClick={onClose} className="outline-button rounded-2xl px-5 py-3 text-sm font-black">Cancelar</button>
+            <button className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-6 py-3 text-sm font-black text-white shadow-sm transition hover:scale-[1.01] hover:bg-emerald-700">
+              <Save size={18} /> Salvar item fixo
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
 
@@ -4847,18 +5097,34 @@ function ChartCard({ title, subtitle, children }) {
   );
 }
 
-function TransactionRow({ item, onEdit, onDelete, onDuplicate }) {
+function TransactionRow({ item, onEdit, onDelete, onDuplicate, onView, creditCards = [] }) {
   const isIncome = item.type === "income";
+  const cardName = creditCards.find((card) => card.id === item.card_id)?.name;
+  function handleKeyDown(event) {
+    if ((event.key === "Enter" || event.key === " ") && onView) {
+      event.preventDefault();
+      onView(item);
+    }
+  }
 
   return (
-    <article className="transaction-row flex flex-col gap-3 rounded-2xl p-4 sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex items-start gap-3">
+    <article
+      className="transaction-row transaction-row-clickable flex flex-col gap-3 rounded-2xl p-4 sm:flex-row sm:items-center sm:justify-between"
+      onClick={() => onView?.(item)}
+      onKeyDown={handleKeyDown}
+      role={onView ? "button" : undefined}
+      tabIndex={onView ? 0 : undefined}
+      title={onView ? "Clique para ver detalhes do lançamento" : undefined}
+    >
+      <div className="flex min-w-0 items-start gap-3">
         <div className={classNames("rounded-2xl p-2", isIncome ? "income-icon" : "expense-icon")}>
           {isIncome ? <ArrowUpCircle size={22} /> : <ArrowDownCircle size={22} />}
         </div>
-        <div>
-          <h3 className="font-black">{item.description}</h3>
-          <p className="muted-text text-sm">{item.category} · {item.method} · {formatDateBR(item.date)}</p>
+        <div className="min-w-0">
+          <h3 className="truncate font-black">{item.description}</h3>
+          <p className="muted-text text-sm">
+            {item.category} · {item.method}{cardName ? ` · ${cardName}` : ""} · {formatDateBR(item.date)}
+          </p>
         </div>
       </div>
 
@@ -4866,7 +5132,7 @@ function TransactionRow({ item, onEdit, onDelete, onDuplicate }) {
         <strong className={classNames("text-lg", isIncome ? "text-emerald-500" : "text-rose-500")}>
           {isIncome ? "+" : "-"} {money.format(item.amount)}
         </strong>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1" onClick={(event) => event.stopPropagation()}>
           <button onClick={() => onDuplicate(item)} className="icon-button rounded-xl p-2 hover:text-emerald-500" title="Duplicar"><Repeat size={17} /></button>
           <button onClick={() => onEdit(item)} className="icon-button rounded-xl p-2 hover:text-blue-500" title="Editar"><Edit3 size={17} /></button>
           <button onClick={() => onDelete(item.id)} className="icon-button rounded-xl p-2 hover:text-rose-500" title="Excluir"><Trash2 size={17} /></button>
@@ -5176,7 +5442,8 @@ function GlobalStyles() {
       .edit-modal-glow-two { width: 260px; height: 260px; right: -120px; bottom: -130px; background: rgba(37, 99, 235, 0.16); }
       .edit-chip-income { background: rgba(16, 185, 129, 0.14); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.24); }
       .edit-chip-expense { background: rgba(244, 63, 94, 0.14); color: #fda4af; border: 1px solid rgba(244, 63, 94, 0.24); }
-      .edit-summary-card { background: rgba(15, 23, 42, 0.58); border: 1px solid rgba(148, 163, 184, 0.14); box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); }
+      .edit-summary-grid { align-items: stretch; }
+      .edit-summary-card { min-width: 0; background: rgba(15, 23, 42, 0.58); border: 1px solid rgba(148, 163, 184, 0.14); box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); }
       .edit-modal-close { background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.12); color: #cbd5e1; transition: background-color 0.2s ease, color 0.2s ease, transform 0.2s ease; }
       .edit-modal-close:hover { background: rgba(244, 63, 94, 0.16); color: #fda4af; transform: scale(1.04); }
       .edit-modal-content {
@@ -5228,7 +5495,15 @@ function GlobalStyles() {
         .edit-modal-hero h2 { font-size: 1.7rem; line-height: 1.1; }
         .edit-modal-hero p { font-size: 0.82rem; line-height: 1.55; }
         .edit-modal-close { height: 2.65rem; width: 2.65rem; border-radius: 1rem; }
-        .edit-summary-card { padding: 0.85rem; }
+        .edit-summary-grid {
+          margin-top: 1rem;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 0.5rem;
+        }
+        .edit-summary-card { padding: 0.7rem; border-radius: 1rem; }
+        .edit-summary-card span { font-size: 0.56rem; line-height: 1; letter-spacing: 0.045em; }
+        .edit-summary-card strong { min-width: 0; font-size: 0.88rem; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .edit-summary-card svg { width: 14px; height: 14px; flex: 0 0 auto; }
         .edit-modal-content { padding: 1rem; }
         .edit-modal-footer {
           padding: 0.85rem 1rem calc(0.85rem + env(safe-area-inset-bottom));
@@ -5236,6 +5511,10 @@ function GlobalStyles() {
         .edit-modal-footer button { width: 100%; min-height: 3.15rem; }
       }
       .transaction-row { background: var(--surface-2); border: 1px solid var(--border); color: var(--text); }
+      .transaction-row-clickable { cursor: pointer; transition: transform 0.18s ease, border-color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease; }
+      .transaction-row-clickable:hover, .transaction-row-clickable:focus-visible { border-color: rgba(16, 185, 129, 0.38); background: color-mix(in srgb, var(--surface-2) 88%, rgba(16, 185, 129, 0.08)); box-shadow: 0 14px 28px rgba(2, 6, 23, 0.12); transform: translateY(-1px); outline: none; }
+      .transaction-note-preview { display: inline-flex; align-items: center; gap: 0.45rem; max-width: min(100%, 520px); background: rgba(148, 163, 184, 0.10); border: 1px solid rgba(148, 163, 184, 0.14); color: var(--muted); }
+      .transaction-detail-info { background: var(--surface-2); border: 1px solid var(--border); }
       .empty-state { border: 1px dashed var(--border); color: var(--muted); }
       .metric-emerald { background: rgba(16, 185, 129, 0.12); color: #059669; }
       .metric-rose { background: rgba(244, 63, 94, 0.12); color: #e11d48; }
@@ -5315,6 +5594,8 @@ function GlobalStyles() {
       .theme-light .edit-installment-card { background: #f8fafc; border-color: #dbe5ef; }
       .theme-light .edit-modal-footer { background: rgba(255,255,255,0.92); border-color: #dbe5ef; }
       .theme-light .transaction-row { background: #ffffff; }
+      .theme-light .transaction-note-preview { background: #f8fafc; border-color: #e2e8f0; }
+      .theme-light .transaction-detail-info { background: #f8fafc; border-color: #dbe5ef; }
       .theme-light .empty-state { background: rgba(248, 250, 252, 0.85); }
       .theme-light .home-mini-card,
       .theme-light .home-stat-card { background: rgba(255, 255, 255, 0.82); }
@@ -5323,11 +5604,17 @@ function GlobalStyles() {
       .theme-light .outline-button:hover { background: #f0fdfa; border-color: rgba(16, 185, 129, 0.35); }
 
       @media (max-width: 640px) {
-        .edit-modal-backdrop { align-items: flex-end; padding: 0.75rem; }
-        .edit-modal-shell { max-height: calc(100vh - 1.5rem); border-radius: 1.75rem; }
-        .edit-modal-hero { padding: 1.25rem; }
-        .edit-modal-content { padding: 1.25rem; }
-        .edit-modal-footer { padding: 0.9rem 1.25rem 1.05rem; }
+        .edit-modal-backdrop {
+          align-items: center;
+          padding: max(0.65rem, env(safe-area-inset-top)) 0.65rem max(0.65rem, env(safe-area-inset-bottom)) 0.65rem;
+        }
+        .edit-modal-shell {
+          max-height: calc(100dvh - max(1.3rem, env(safe-area-inset-top)) - max(1.3rem, env(safe-area-inset-bottom)));
+          border-radius: 1.65rem;
+        }
+        .edit-modal-hero { padding: 1rem; }
+        .edit-modal-content { padding: 1rem; }
+        .edit-modal-footer { padding: 0.85rem 1rem calc(0.85rem + env(safe-area-inset-bottom)); }
       }
 
       @keyframes toastSlideIn {
