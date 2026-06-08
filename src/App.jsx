@@ -3873,7 +3873,13 @@ function TransactionsPage({ form, setForm, resetForm, onSubmit, visibleTransacti
           </select>
         </div>
 
-        <div className="space-y-3">
+        <div
+  className="space-y-3 overflow-y-auto pr-2"
+  style={{
+    maxHeight: "70vh",
+    scrollbarGutter: "stable",
+  }}
+>
           {visibleTransactions.length ? visibleTransactions.map((item) => <TransactionRow key={item.id} item={item} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} onView={onView} creditCards={creditCards} />) : <EmptyState title="Nenhum lançamento encontrado" text="Tente limpar filtros ou cadastrar uma nova receita/despesa." />}
         </div>
       </section>
@@ -4535,8 +4541,10 @@ function RecurringPage({ recurringForm, setRecurringForm, recurringItems, onSubm
           </div>
           <button onClick={onGenerate} className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-black text-white">Gerar mês</button>
         </div>
-        <div className="space-y-3">
+        <div className="max-h-[400px] overflow-y-auto pr-2">
+  <div className="space-y-3">
           {recurringItems.length ? recurringItems.map((item) => <RecurringRow key={item.id} item={item} onToggle={onToggle} onEdit={onEdit} onDelete={onDelete} />) : <EmptyState text="Nenhum item recorrente cadastrado." />}
+        </div>
         </div>
       </section>
     </main>
@@ -4991,7 +4999,8 @@ function CreditCardInvoicePanel({
         </div>
       )}
 
-      <div className="space-y-3">
+      <div className="max-h-[300px] overflow-y-auto pr-2">
+  <div className="space-y-3">
         <div className="flex items-center justify-between gap-3">
           <h3 className="font-black">Lançamentos vinculados</h3>
           <span className="muted-text text-sm font-semibold">Total lançado: {money.format(totalTransactions)}</span>
@@ -5005,6 +5014,7 @@ function CreditCardInvoicePanel({
             <strong className="text-rose-500">{money.format(item.amount)}</strong>
           </div>
         )) : <EmptyState title="Nenhum lançamento vinculado" text="Vincule lançamentos a este cartão para acompanhar saldo, limite ou fatura acumulada." />}
+      </div>
       </div>
     </section>
   );
@@ -6129,6 +6139,22 @@ function GlobalStyles() {
         from { opacity: 0; transform: translateY(8px); }
         to { opacity: 1; transform: translateY(0); }
       }
+        ::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(16, 185, 129, 0.5);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(16, 185, 129, 0.8);
+}
     `}</style>
   );
 }
