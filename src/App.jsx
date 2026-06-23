@@ -2028,9 +2028,10 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
   const [preferences, setPreferences] = useState(null);
 
   const [query, setQuery] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState("Todas");
-  const [typeFilter, setTypeFilter] = useState("all");
-  const [cardFilter, setCardFilter] = useState("all");
+  const [dateFilter, setDateFilter] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState(["Todas"]);
+  const [typeFilter, setTypeFilter] = useState(["all"]);
+  const [cardFilter, setCardFilter] = useState(["all"]);
   const [sortBy, setSortBy] = useState("recent");
 
   const emptyForm = {
@@ -2232,13 +2233,18 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
   }, [transactions, selectedMonth]);
 
   const visibleTransactions = useMemo(() => {
+    const selectedCategories = Array.isArray(categoryFilter) ? categoryFilter : [categoryFilter];
+    const selectedTypes = Array.isArray(typeFilter) ? typeFilter : [typeFilter];
+    const selectedCards = Array.isArray(cardFilter) ? cardFilter : [cardFilter];
+
     const filtered = monthTransactions
-      .filter((item) => categoryFilter === "Todas" || item.category === categoryFilter)
-      .filter((item) => typeFilter === "all" || item.type === typeFilter)
+      .filter((item) => selectedCategories.includes("Todas") || selectedCategories.includes(item.category))
+      .filter((item) => selectedTypes.includes("all") || selectedTypes.includes(item.type))
+      .filter((item) => !dateFilter || item.date === dateFilter)
       .filter((item) => {
-        if (cardFilter === "all") return true;
-        if (cardFilter === "none") return !item.card_id;
-        return item.card_id === cardFilter;
+        if (selectedCards.includes("all")) return true;
+        if (selectedCards.includes("none") && !item.card_id) return true;
+        return selectedCards.includes(item.card_id);
       })
       .filter((item) => {
         const search = query.trim().toLowerCase();
@@ -2252,7 +2258,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
       if (sortBy === "lowest") return Number(a.amount) - Number(b.amount);
       return new Date(b.date) - new Date(a.date);
     });
-  }, [monthTransactions, categoryFilter, typeFilter, cardFilter, query, sortBy]);
+  }, [monthTransactions, categoryFilter, typeFilter, cardFilter, dateFilter, query, sortBy]);
 
   const summary = useMemo(() => {
     const income = monthTransactions.filter((item) => item.type === "income").reduce((total, item) => total + Number(item.amount), 0);
@@ -2781,6 +2787,37 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     });
   }
 
+  function buildRecurringTransactionRow(item, monthValue = selectedMonth) {
+    const [year, month] = monthValue.split("-");
+    const lastDay = daysInMonth(year, month);
+    const day = Math.min(Number(item.day_of_month || 1), lastDay);
+
+    return {
+      user_id: user.id,
+      type: item.type,
+      description: item.description,
+      category: item.category,
+      method: item.method,
+      amount: Number(item.amount),
+      date: `${monthValue}-${String(day).padStart(2, "0")}`,
+      recurring_item_id: item.id,
+      recurrence_month: monthValue,
+    };
+  }
+
+  async function syncRecurringItemsForMonth(items = recurringItems, monthValue = selectedMonth) {
+    const activeItems = items.filter((item) => item?.is_active);
+    if (!activeItems.length) return { count: 0 };
+
+    const rows = activeItems.map((item) => buildRecurringTransactionRow(item, monthValue));
+    const { error } = await supabase.from("transactions").upsert(rows, {
+      onConflict: "user_id,recurring_item_id,recurrence_month",
+    });
+
+    if (error) throw error;
+    return { count: rows.length };
+  }
+
   async function handleRecurringSubmit(event) {
     event.preventDefault();
     const amount = toNumber(recurringForm.amount);
@@ -2793,23 +2830,32 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     }
 
     try {
-      const { error } = await supabase.from("recurring_items").insert({
-        user_id: user.id,
-        type: recurringForm.type,
-        description,
-        category: recurringForm.category,
-        method: recurringForm.method,
-        amount,
-        day_of_month: day,
-        is_active: recurringForm.is_active,
-      });
+      const { data: createdRecurring, error } = await supabase
+        .from("recurring_items")
+        .insert({
+          user_id: user.id,
+          type: recurringForm.type,
+          description,
+          category: recurringForm.category,
+          method: recurringForm.method,
+          amount,
+          day_of_month: day,
+          is_active: recurringForm.is_active,
+        })
+        .select("*")
+        .single();
 
       if (error) throw error;
+
+      if (createdRecurring?.is_active) {
+        await syncRecurringItemsForMonth([normalizeRecurring(createdRecurring)], selectedMonth);
+      }
+
       setRecurringForm(emptyRecurringForm);
-      showToast("Item recorrente criado.");
+      showToast(createdRecurring?.is_active ? "Item fixo criado e lançado automaticamente neste mês." : "Item fixo criado como inativo.", "success");
       await loadAllData();
     } catch (error) {
-      showToast(`Erro ao salvar recorrência: ${error.message}`);
+      showToast(`Erro ao salvar recorrência: ${error.message}`, "error");
     }
   }
 
@@ -2848,7 +2894,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     }
 
     try {
-      const { error } = await supabase
+      const { data: updatedRecurring, error } = await supabase
         .from("recurring_items")
         .update({
           type: editRecurringForm.type,
@@ -2860,10 +2906,17 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
           is_active: editRecurringForm.is_active,
         })
         .eq("id", editingRecurringId)
-        .eq("user_id", user.id);
+        .eq("user_id", user.id)
+        .select("*")
+        .single();
 
       if (error) throw error;
-      showToast("Item fixo atualizado com sucesso.", "success");
+
+      if (updatedRecurring?.is_active) {
+        await syncRecurringItemsForMonth([normalizeRecurring(updatedRecurring)], selectedMonth);
+      }
+
+      showToast(updatedRecurring?.is_active ? "Item fixo atualizado e sincronizado neste mês." : "Item fixo atualizado como inativo.", "success");
       closeEditRecurringModal();
       await loadAllData();
     } catch (error) {
@@ -2872,64 +2925,71 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
   }
 
   async function toggleRecurring(item) {
-    const { error } = await supabase.from("recurring_items").update({ is_active: !item.is_active }).eq("id", item.id).eq("user_id", user.id);
-    if (error) showToast(`Erro ao atualizar recorrência: ${error.message}`);
-    else await loadAllData();
+    try {
+      const nextActive = !item.is_active;
+      const { data: updatedRecurring, error } = await supabase
+        .from("recurring_items")
+        .update({ is_active: nextActive })
+        .eq("id", item.id)
+        .eq("user_id", user.id)
+        .select("*")
+        .single();
+
+      if (error) throw error;
+
+      if (nextActive && updatedRecurring) {
+        await syncRecurringItemsForMonth([normalizeRecurring(updatedRecurring)], selectedMonth);
+      }
+
+      showToast(nextActive ? "Item fixo ativado e sincronizado neste mês." : "Item fixo desativado. Lançamentos já gerados não foram apagados.", "success");
+      await loadAllData();
+    } catch (error) {
+      showToast(`Erro ao atualizar recorrência: ${error.message}`, "error");
+    }
   }
 
   function deleteRecurring(id) {
     openConfirmModal({
       title: "Excluir item fixo",
-      message: "Deseja excluir este item recorrente? Ele não será mais usado para gerar lançamentos mensais.",
+      message: "Deseja excluir este item recorrente? Os lançamentos automáticos já gerados por ele também serão removidos.",
       confirmText: "Excluir",
       cancelText: "Cancelar",
       danger: true,
       onConfirm: async () => {
-        const { error } = await supabase.from("recurring_items").delete().eq("id", id).eq("user_id", user.id);
-        if (error) showToast(`Erro ao excluir recorrência: ${error.message}`, "error");
-        else {
-          showToast("Item recorrente excluído com sucesso.", "success");
+        try {
+          const { error: transactionError } = await supabase
+            .from("transactions")
+            .delete()
+            .eq("user_id", user.id)
+            .eq("recurring_item_id", id);
+
+          if (transactionError) throw transactionError;
+
+          const { error } = await supabase.from("recurring_items").delete().eq("id", id).eq("user_id", user.id);
+          if (error) throw error;
+
+          showToast("Item fixo e lançamentos automáticos removidos com sucesso.", "success");
           await loadAllData();
+        } catch (error) {
+          showToast(`Erro ao excluir recorrência: ${error.message}`, "error");
         }
       },
     });
   }
 
   async function generateRecurringForMonth() {
-    const activeItems = recurringItems.filter((item) => item.is_active);
-    if (!activeItems.length) {
-      showToast("Você não possui itens recorrentes ativos.");
-      return;
-    }
-
-    const [year, month] = selectedMonth.split("-");
-    const lastDay = daysInMonth(year, month);
-
-    const rows = activeItems.map((item) => {
-      const day = Math.min(Number(item.day_of_month), lastDay);
-      return {
-        user_id: user.id,
-        type: item.type,
-        description: item.description,
-        category: item.category,
-        method: item.method,
-        amount: Number(item.amount),
-        date: `${selectedMonth}-${String(day).padStart(2, "0")}`,
-        recurring_item_id: item.id,
-        recurrence_month: selectedMonth,
-      };
-    });
-
     try {
-      const { error } = await supabase.from("transactions").upsert(rows, {
-        onConflict: "user_id,recurring_item_id,recurrence_month",
-      });
+      const { count } = await syncRecurringItemsForMonth(recurringItems, selectedMonth);
 
-      if (error) throw error;
-      showToast(`Recorrências de ${monthLabel(selectedMonth)} geradas/atualizadas.`);
+      if (!count) {
+        showToast("Você não possui itens fixos ativos para sincronizar.", "warning");
+        return;
+      }
+
+      showToast(`${count} fixo(s) sincronizado(s) em ${monthLabel(selectedMonth)}.`, "success");
       await loadAllData();
     } catch (error) {
-      showToast(`Erro ao gerar recorrências: ${error.message}`);
+      showToast(`Erro ao sincronizar fixos: ${error.message}`, "error");
     }
   }
 
@@ -3351,16 +3411,33 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
   const tabs = [
     { key: "dashboard", label: "Painel", icon: <BarChart3 size={17} /> },
     { key: "annual", label: "Anual", icon: <CalendarRange size={17} /> },
+    { key: "recurring", label: "Fixos", icon: <Repeat size={17} /> },
     { key: "transactions", label: "Lançamentos", icon: <Wallet size={17} /> },
+    { key: "cards", label: "Cartões", icon: <CreditCard size={17} /> },
     { key: "goals", label: "Metas", icon: <Target size={17} /> },
     { key: "limits", label: "Limites", icon: <PiggyBank size={17} /> },
-    { key: "cards", label: "Cartões", icon: <CreditCard size={17} /> },
-    { key: "recurring", label: "Fixos", icon: <Repeat size={17} /> },
     { key: "calendar", label: "Calendário", icon: <CalendarClock size={17} /> },
     { key: "reports", label: "Relatórios", icon: <FileText size={17} /> },
     { key: "profile", label: "Perfil", icon: <UserRound size={17} /> },
     { key: "settings", label: "Configurações", icon: <Settings size={17} /> },
   ];
+
+  function openTransactionsWithFilters({ categories = ["Todas"], types = ["all"], cards = ["all"], date = "", search = "", sort = "recent" } = {}) {
+    setQuery(search);
+    setDateFilter(date);
+    setCategoryFilter(Array.isArray(categories) ? categories : [categories]);
+    setTypeFilter(Array.isArray(types) ? types : [types]);
+    setCardFilter(Array.isArray(cards) ? cards : [cards]);
+    setSortBy(sort);
+    setPage("transactions");
+  }
+
+  function openMonthlyDashboard(monthValue) {
+    setSelectedMonth(monthValue);
+    setDateFilter("");
+    setPage("dashboard");
+    showToast(`Painel de ${monthLabel(monthValue)} aberto.`, "info");
+  }
 
   if (loadingData || !minimumDataLoadingDone) {
     return (
@@ -3507,6 +3584,8 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
           notifications={financialNotifications}
           cardUsage={cardUsage}
           healthStatus={financialHealth}
+          onOpenTransactions={openTransactionsWithFilters}
+          onSelectMonth={openMonthlyDashboard}
         />
       )}
 
@@ -3520,6 +3599,8 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
           allCategories={allCategories}
           query={query}
           setQuery={setQuery}
+          dateFilter={dateFilter}
+          setDateFilter={setDateFilter}
           categoryFilter={categoryFilter}
           setCategoryFilter={setCategoryFilter}
           typeFilter={typeFilter}
@@ -3559,9 +3640,9 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
 
       {page === "calendar" && <FinancialCalendarPage selectedMonth={selectedMonth} events={calendarEvents} />}
 
-      {page === "annual" && <AnnualDashboardPage selectedYear={selectedYear} setSelectedYear={setSelectedYear} years={availableYears} data={annualMonthlyData} summary={annualSummary} />}
+      {page === "annual" && <AnnualDashboardPage selectedYear={selectedYear} setSelectedYear={setSelectedYear} years={availableYears} data={annualMonthlyData} summary={annualSummary} onMonthClick={openMonthlyDashboard} />}
 
-      {page === "reports" && <ReportsPage summary={summary} selectedMonth={selectedMonth} visibleTransactions={visibleTransactions} topExpenses={topExpenses} goals={goals} exportCSV={exportCSV} exportPDF={exportPDF} exportBackup={exportBackup} />}
+      {page === "reports" && <ReportsPage summary={summary} selectedMonth={selectedMonth} visibleTransactions={visibleTransactions} topExpenses={topExpenses} goals={goals} exportCSV={exportCSV} exportPDF={exportPDF} exportBackup={exportBackup} onOpenTransactions={openTransactionsWithFilters} setPage={setPage} />}
 
       {page === "profile" && <ProfilePage user={user} profileName={profileName} setProfileName={setProfileName} onSubmit={updateProfile} />}
 
@@ -3705,19 +3786,51 @@ function FinancialHealthCard({ healthStatus, summary, setPage }) {
   );
 }
 
-function DashboardOverview({ summary, expenseByCategory, dailyFlow, monthlyComparison, topExpenses, goals, selectedMonth, setPage, insights, cardUsage, healthStatus }) {
+function DashboardOverview({ summary, expenseByCategory, dailyFlow, monthlyComparison, topExpenses, goals, selectedMonth, setPage, insights, cardUsage, healthStatus, onOpenTransactions, onSelectMonth }) {
   const topExpense = expenseByCategory[0];
   const nextGoal = goals[0];
+
+  function openDay(day) {
+    onOpenTransactions?.({ date: `${selectedMonth}-${String(day).padStart(2, "0")}` });
+  }
 
   return (
     <main className="grid gap-6">
       <FinancialHealthCard healthStatus={healthStatus} summary={summary} setPage={setPage} />
 
       <section className="grid gap-4 md:grid-cols-4">
-        <MetricCard title="Receitas" value={money.format(summary.income)} icon={<ArrowUpCircle />} tone="emerald" />
-        <MetricCard title="Despesas" value={money.format(summary.expense)} icon={<ArrowDownCircle />} tone="rose" />
-        <MetricCard title="Saldo do mês" value={money.format(summary.balance)} icon={<Wallet />} tone={summary.balance >= 0 ? "blue" : "rose"} />
-        <MetricCard title="Economia" value={`${summary.savingRate}%`} icon={<PiggyBank />} tone="amber" />
+        <MetricCard
+          title="Receitas"
+          value={money.format(summary.income)}
+          icon={<ArrowUpCircle />}
+          tone="emerald"
+          onClick={() => onOpenTransactions?.({ types: ["income"] })}
+          info="Soma de todas as entradas cadastradas no mês selecionado. Clique para ver apenas receitas nos lançamentos."
+        />
+        <MetricCard
+          title="Despesas"
+          value={money.format(summary.expense)}
+          icon={<ArrowDownCircle />}
+          tone="rose"
+          onClick={() => onOpenTransactions?.({ types: ["expense"] })}
+          info="Soma de todos os gastos cadastrados no mês selecionado. Clique para ver apenas despesas."
+        />
+        <MetricCard
+          title="Saldo do mês"
+          value={money.format(summary.balance)}
+          icon={<Wallet />}
+          tone={summary.balance >= 0 ? "blue" : "rose"}
+          onClick={() => setPage("reports")}
+          info="Diferença entre receitas e despesas do mês. Clique para abrir os relatórios do período."
+        />
+        <MetricCard
+          title="Economia"
+          value={`${summary.savingRate}%`}
+          icon={<PiggyBank />}
+          tone="amber"
+          onClick={() => setPage("reports")}
+          info="Percentual calculado com base no saldo dividido pelas receitas. Ajuda a entender quanto sobrou da renda."
+        />
       </section>
 
       <section className="grid gap-6 xl:grid-cols-[1fr_1fr]">
@@ -3726,13 +3839,25 @@ function DashboardOverview({ summary, expenseByCategory, dailyFlow, monthlyCompa
       </section>
 
       <section className="grid gap-6 xl:grid-cols-2">
-        <ChartCard title="Gastos por categoria" subtitle={topExpense ? `Maior gasto: ${topExpense.name}` : "Sem despesas neste mês"}>
+        <ChartCard
+          title="Gastos por categoria"
+          subtitle={topExpense ? `Maior gasto: ${topExpense.name}` : "Sem despesas neste mês"}
+          info="Mostra como suas despesas estão distribuídas por categoria. Clique em uma fatia para abrir os lançamentos daquela categoria."
+        >
           {expenseByCategory.length ? (
             <ResponsiveContainer width="100%" height={280}>
               <PieChart>
-                <Pie data={expenseByCategory} innerRadius={70} outerRadius={105} paddingAngle={3} dataKey="value" nameKey="name">
+                <Pie
+                  data={expenseByCategory}
+                  innerRadius={70}
+                  outerRadius={105}
+                  paddingAngle={3}
+                  dataKey="value"
+                  nameKey="name"
+                  onClick={(entry) => onOpenTransactions?.({ categories: [entry.name], types: ["expense"] })}
+                >
                   {expenseByCategory.map((entry, index) => (
-                    <Cell key={entry.name} fill={chartColors[index % chartColors.length]} />
+                    <Cell key={entry.name} fill={chartColors[index % chartColors.length]} className="cursor-pointer" />
                   ))}
                 </Pie>
                 <Tooltip cursor={false} contentStyle={tooltipStyle()} formatter={(value) => money.format(value)} />
@@ -3743,16 +3868,20 @@ function DashboardOverview({ summary, expenseByCategory, dailyFlow, monthlyCompa
           )}
         </ChartCard>
 
-        <ChartCard title="Fluxo diário" subtitle={`Receitas e despesas em ${monthLabel(selectedMonth)}`}>
+        <ChartCard
+          title="Fluxo diário"
+          subtitle={`Receitas e despesas em ${monthLabel(selectedMonth)}`}
+          info="Mostra em quais dias do mês entraram receitas e saíram despesas. Clique em um dia do gráfico para ver os lançamentos daquele dia."
+        >
           {dailyFlow.length ? (
             <ResponsiveContainer width="100%" height={280}>
-              <BarChart data={dailyFlow}>
+              <BarChart data={dailyFlow} onClick={(event) => event?.activePayload?.[0]?.payload?.day && openDay(event.activePayload[0].payload.day)}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
                 <XAxis dataKey="day" tick={{ fill: "var(--muted)" }} axisLine={{ stroke: "var(--border)" }} tickLine={{ stroke: "var(--border)" }} />
                 <YAxis tickFormatter={(value) => `R$${value}`} tick={{ fill: "var(--muted)" }} axisLine={{ stroke: "var(--border)" }} tickLine={{ stroke: "var(--border)" }} />
                 <Tooltip cursor={false} contentStyle={tooltipStyle()} formatter={(value) => money.format(value)} />
-                <Bar dataKey="income" name="Receita" fill="#059669" radius={[8, 8, 0, 0]} />
-                <Bar dataKey="expense" name="Despesa" fill="#e11d48" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="income" name="Receita" fill="#059669" radius={[8, 8, 0, 0]} className="cursor-pointer" />
+                <Bar dataKey="expense" name="Despesa" fill="#e11d48" radius={[8, 8, 0, 0]} className="cursor-pointer" />
               </BarChart>
             </ResponsiveContainer>
           ) : (
@@ -3762,16 +3891,20 @@ function DashboardOverview({ summary, expenseByCategory, dailyFlow, monthlyCompa
       </section>
 
       <section className="grid gap-6 xl:grid-cols-[1.3fr_0.7fr]">
-        <ChartCard title="Comparação mensal" subtitle="Últimos meses com movimentação">
+        <ChartCard
+          title="Comparação mensal"
+          subtitle="Últimos meses com movimentação"
+          info="Compara receitas e despesas dos últimos meses. Clique em uma barra/mês para abrir o painel daquele mês."
+        >
           {monthlyComparison.length ? (
             <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={monthlyComparison}>
+              <BarChart data={monthlyComparison} onClick={(event) => event?.activePayload?.[0]?.payload?.month && onSelectMonth?.(event.activePayload[0].payload.month)}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
                 <XAxis dataKey="month" tick={{ fill: "var(--muted)" }} />
                 <YAxis tickFormatter={(value) => `R$${value}`} tick={{ fill: "var(--muted)" }} />
                 <Tooltip cursor={false} contentStyle={tooltipStyle()} formatter={(value) => money.format(value)} />
-                <Bar dataKey="income" name="Receita" fill="#059669" radius={[8, 8, 0, 0]} />
-                <Bar dataKey="expense" name="Despesa" fill="#e11d48" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="income" name="Receita" fill="#059669" radius={[8, 8, 0, 0]} className="cursor-pointer" />
+                <Bar dataKey="expense" name="Despesa" fill="#e11d48" radius={[8, 8, 0, 0]} className="cursor-pointer" />
               </BarChart>
             </ResponsiveContainer>
           ) : (
@@ -3780,23 +3913,26 @@ function DashboardOverview({ summary, expenseByCategory, dailyFlow, monthlyCompa
         </ChartCard>
 
         <section className="surface-card rounded-[2rem] p-5 shadow-sm">
-          <div className="mb-4 flex items-center justify-between">
+          <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-xl font-black">Top 5 gastos</h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-xl font-black">Top 5 gastos</h2>
+                <InfoPopover title="Top 5 gastos" text="Lista os maiores gastos do mês selecionado. Clique em um item para filtrar lançamentos semelhantes." />
+              </div>
               <p className="muted-text text-sm">Maiores despesas do mês</p>
             </div>
-            <button onClick={() => setPage("transactions")} className="ghost-button rounded-xl px-3 py-2 text-sm font-bold">Ver todos</button>
+            <button onClick={() => onOpenTransactions?.({ types: ["expense"], sort: "highest" })} className="ghost-button rounded-xl px-3 py-2 text-sm font-bold">Ver todos</button>
           </div>
           <div className="space-y-3">
             {topExpenses.length ? (
               topExpenses.map((item, index) => (
-                <div key={item.id} className="transaction-row flex items-center justify-between rounded-2xl p-3">
+                <button key={item.id} type="button" onClick={() => onOpenTransactions?.({ categories: [item.category], types: ["expense"], search: item.description })} className="transaction-row interactive-row flex w-full items-center justify-between rounded-2xl p-3 text-left">
                   <div>
                     <strong>{index + 1}. {item.description}</strong>
                     <p className="muted-text text-sm">{item.category}</p>
                   </div>
                   <strong className="text-rose-500">{money.format(item.amount)}</strong>
-                </div>
+                </button>
               ))
             ) : (
               <EmptyState text="Nenhuma despesa cadastrada neste mês." />
@@ -3806,13 +3942,16 @@ function DashboardOverview({ summary, expenseByCategory, dailyFlow, monthlyCompa
       </section>
 
       {nextGoal && (
-        <section className="surface-card rounded-[2rem] p-5 shadow-sm">
+        <section className="surface-card interactive-card rounded-[2rem] p-5 shadow-sm" role="button" tabIndex={0} onClick={() => setPage("goals")} onKeyDown={(event) => (event.key === "Enter" || event.key === " ") && setPage("goals")}>
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
-              <h2 className="text-xl font-black">Meta em destaque: {nextGoal.title}</h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-xl font-black">Meta em destaque: {nextGoal.title}</h2>
+                <InfoPopover title="Meta em destaque" text="Mostra a primeira meta cadastrada e o progresso atual. Clique para abrir a área de metas." />
+              </div>
               <p className="muted-text text-sm">{money.format(nextGoal.current_amount)} de {money.format(nextGoal.target_amount)}</p>
             </div>
-            <button onClick={() => setPage("goals")} className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-black text-white">Acompanhar metas</button>
+            <button type="button" onClick={(event) => { event.stopPropagation(); setPage("goals"); }} className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-black text-white">Acompanhar metas</button>
           </div>
           <ProgressBar value={nextGoal.current_amount} max={nextGoal.target_amount} />
         </section>
@@ -3821,7 +3960,193 @@ function DashboardOverview({ summary, expenseByCategory, dailyFlow, monthlyCompa
   );
 }
 
-function TransactionsPage({ form, setForm, resetForm, onSubmit, visibleTransactions, allCategories, query, setQuery, categoryFilter, setCategoryFilter, typeFilter, setTypeFilter, cardFilter, setCardFilter, sortBy, setSortBy, onEdit, onDelete, onDuplicate, onView, exportCSV, creditCards }) {
+
+function calculateTransactionTotals(items = []) {
+  const income = items.filter((item) => item.type === "income").reduce((total, item) => total + Number(item.amount || 0), 0);
+  const expense = items.filter((item) => item.type === "expense").reduce((total, item) => total + Number(item.amount || 0), 0);
+  return {
+    count: items.length,
+    income,
+    expense,
+    balance: income - expense,
+  };
+}
+
+function SummaryMiniCard({ title, value, tone = "blue", helper }) {
+  const toneClasses = {
+    emerald: "summary-mini-emerald",
+    rose: "summary-mini-rose",
+    blue: "summary-mini-blue",
+    amber: "summary-mini-amber",
+  };
+
+  return (
+    <div className={classNames("summary-mini-card rounded-2xl p-4", toneClasses[tone])}>
+      <p className="text-xs font-black uppercase tracking-[0.12em]">{title}</p>
+      <strong className="mt-2 block text-xl font-black tracking-tight">{value}</strong>
+      {helper && <span className="mt-1 block text-xs font-semibold opacity-80">{helper}</span>}
+    </div>
+  );
+}
+
+function TransactionsSummaryPanel({ filteredTotals, selectedTotals, selectedCount, totalCount, allVisibleSelected, onSelectAll, onClearSelection }) {
+  return (
+    <section className="summary-panel mb-4 rounded-[1.7rem] p-4">
+      <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <h3 className="text-lg font-black">Resumo dos filtros</h3>
+            <InfoPopover title="Resumo dos filtros" text="Soma automaticamente todos os lançamentos que aparecem com os filtros atuais, parecido com uma planilha." />
+          </div>
+          <p className="muted-text text-sm">Valores calculados com base nos lançamentos visíveis no filtro atual.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={onSelectAll} className="outline-button rounded-2xl px-4 py-2 text-xs font-black">
+            {allVisibleSelected ? "Todos selecionados" : "Selecionar visíveis"}
+          </button>
+          {selectedCount > 0 && (
+            <button type="button" onClick={onClearSelection} className="ghost-button rounded-2xl px-4 py-2 text-xs font-black">
+              Limpar seleção
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-4">
+        <SummaryMiniCard title="Lançamentos" value={String(filteredTotals.count)} tone="blue" helper="no filtro atual" />
+        <SummaryMiniCard title="Receitas" value={money.format(filteredTotals.income)} tone="emerald" />
+        <SummaryMiniCard title="Despesas" value={money.format(filteredTotals.expense)} tone="rose" />
+        <SummaryMiniCard title="Saldo filtrado" value={money.format(filteredTotals.balance)} tone={filteredTotals.balance >= 0 ? "emerald" : "rose"} />
+      </div>
+
+      {selectedCount > 0 && (
+        <div className="summary-selected mt-4 rounded-2xl p-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h4 className="font-black">Soma selecionada</h4>
+              <p className="muted-text text-sm">{selectedCount} lançamento(s) marcado(s) manualmente.</p>
+            </div>
+          </div>
+          <div className="grid gap-3 md:grid-cols-4">
+            <SummaryMiniCard title="Selecionados" value={String(selectedCount)} tone="blue" />
+            <SummaryMiniCard title="Receitas" value={money.format(selectedTotals.income)} tone="emerald" />
+            <SummaryMiniCard title="Despesas" value={money.format(selectedTotals.expense)} tone="rose" />
+            <SummaryMiniCard title="Saldo selecionado" value={money.format(selectedTotals.balance)} tone={selectedTotals.balance >= 0 ? "emerald" : "rose"} />
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MultiFilterSelect({ label, values, onChange, options, allValue, allLabel }) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef(null);
+  const selectedValues = Array.isArray(values) && values.length ? values : [allValue];
+
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (containerRef.current && !containerRef.current.contains(event.target)) {
+        setOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  function toggleValue(value) {
+    if (value === allValue) {
+      onChange([allValue]);
+      return;
+    }
+
+    const withoutAll = selectedValues.filter((item) => item !== allValue);
+    const nextValues = withoutAll.includes(value)
+      ? withoutAll.filter((item) => item !== value)
+      : [...withoutAll, value];
+
+    onChange(nextValues.length ? nextValues : [allValue]);
+  }
+
+  const selectedLabels = options
+    .filter((option) => selectedValues.includes(option.value))
+    .map((option) => option.label);
+
+  const buttonText = selectedValues.includes(allValue)
+    ? allLabel
+    : selectedLabels.length <= 2
+      ? selectedLabels.join(", ")
+      : `${selectedLabels.slice(0, 2).join(", ")} +${selectedLabels.length - 2}`;
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="input flex min-h-[46px] items-center justify-between gap-3 text-left"
+        title={buttonText}
+      >
+        <span className="min-w-0 truncate">{buttonText}</span>
+        <span className="muted-text text-xs font-black">▾</span>
+      </button>
+
+      {open && (
+        <div className="multi-filter-menu absolute left-0 top-[calc(100%+0.5rem)] z-50 w-full min-w-[220px] rounded-2xl p-2 shadow-2xl">
+          <div className="mb-2 flex items-center justify-between gap-2 px-2 pt-1">
+            <span className="muted-text text-xs font-black uppercase tracking-[0.16em]">{label}</span>
+            {!selectedValues.includes(allValue) && (
+              <button type="button" onClick={() => onChange([allValue])} className="text-xs font-black text-emerald-400 hover:text-emerald-300">
+                Limpar
+              </button>
+            )}
+          </div>
+
+          <div className="max-h-64 space-y-1 overflow-y-auto pr-1">
+            {options.map((option) => {
+              const checked = selectedValues.includes(option.value);
+              return (
+                <label key={option.value} className={classNames("multi-filter-option flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2 text-sm font-bold", checked && "multi-filter-option-active")}>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleValue(option.value)}
+                    className="h-4 w-4 accent-emerald-500"
+                  />
+                  <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TransactionsPage({ form, setForm, resetForm, onSubmit, visibleTransactions, allCategories, query, setQuery, dateFilter, setDateFilter, categoryFilter, setCategoryFilter, typeFilter, setTypeFilter, cardFilter, setCardFilter, sortBy, setSortBy, onEdit, onDelete, onDuplicate, onView, exportCSV, creditCards }) {
+  const [showAutomaticTransactions, setShowAutomaticTransactions] = useState(false);
+  const [selectedTransactionIds, setSelectedTransactionIds] = useState([]);
+  const manualTransactions = visibleTransactions.filter((item) => !item.recurring_item_id && !item.recurrence_month);
+  const automaticTransactions = visibleTransactions.filter((item) => item.recurring_item_id || item.recurrence_month);
+  const selectedTransactions = visibleTransactions.filter((item) => selectedTransactionIds.includes(item.id));
+  const filteredTotals = calculateTransactionTotals(visibleTransactions);
+  const selectedTotals = calculateTransactionTotals(selectedTransactions);
+  const visibleIds = visibleTransactions.map((item) => item.id);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedTransactionIds.includes(id));
+
+  useEffect(() => {
+    setSelectedTransactionIds((current) => current.filter((id) => visibleIds.includes(id)));
+  }, [visibleTransactions]);
+
+  function toggleTransactionSelection(id) {
+    setSelectedTransactionIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
+  }
+
+  function selectAllVisibleTransactions() {
+    setSelectedTransactionIds(allVisibleSelected ? [] : visibleIds);
+  }
+
   return (
     <main className="grid gap-6 lg:grid-cols-[380px_1fr]">
       <section className="surface-card rounded-[2rem] p-5 shadow-sm">
@@ -3852,19 +4177,38 @@ function TransactionsPage({ form, setForm, resetForm, onSubmit, visibleTransacti
             <Search size={17} className="muted-icon" />
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por descrição, categoria..." className="w-full bg-transparent text-sm outline-none" />
           </label>
-          <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)} className="input">
-            {allCategories.map((category) => <option key={category}>{category}</option>)}
-          </select>
-          <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)} className="input">
-            <option value="all">Todos</option>
-            <option value="income">Receitas</option>
-            <option value="expense">Despesas</option>
-          </select>
-          <select value={cardFilter} onChange={(event) => setCardFilter(event.target.value)} className="input">
-            <option value="all">Todos os cartões</option>
-            <option value="none">Sem cartão</option>
-            {creditCards.map((card) => <option key={card.id} value={card.id}>{card.name}</option>)}
-          </select>
+          <MultiFilterSelect
+            label="Categoria"
+            values={categoryFilter}
+            onChange={setCategoryFilter}
+            allValue="Todas"
+            allLabel="Todas"
+            options={allCategories.map((category) => ({ value: category, label: category }))}
+          />
+          <MultiFilterSelect
+            label="Tipo"
+            values={typeFilter}
+            onChange={setTypeFilter}
+            allValue="all"
+            allLabel="Todos"
+            options={[
+              { value: "all", label: "Todos" },
+              { value: "income", label: "Receitas" },
+              { value: "expense", label: "Despesas" },
+            ]}
+          />
+          <MultiFilterSelect
+            label="Cartões"
+            values={cardFilter}
+            onChange={setCardFilter}
+            allValue="all"
+            allLabel="Todos os cartões"
+            options={[
+              { value: "all", label: "Todos os cartões" },
+              { value: "none", label: "Sem cartão" },
+              ...creditCards.map((card) => ({ value: card.id, label: card.name })),
+            ]}
+          />
           <select value={sortBy} onChange={(event) => setSortBy(event.target.value)} className="input">
             <option value="recent">Mais recente</option>
             <option value="oldest">Mais antigo</option>
@@ -3873,6 +4217,25 @@ function TransactionsPage({ form, setForm, resetForm, onSubmit, visibleTransacti
           </select>
         </div>
 
+        {dateFilter && (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm font-bold text-emerald-300">
+            <span>Filtrando lançamentos de {formatDateBR(dateFilter)}</span>
+            <button type="button" onClick={() => setDateFilter("")} className="rounded-xl px-3 py-1 text-xs font-black hover:bg-emerald-500/10">
+              Remover data
+            </button>
+          </div>
+        )}
+
+        <TransactionsSummaryPanel
+          filteredTotals={filteredTotals}
+          selectedTotals={selectedTotals}
+          selectedCount={selectedTransactions.length}
+          totalCount={visibleTransactions.length}
+          allVisibleSelected={allVisibleSelected}
+          onSelectAll={selectAllVisibleTransactions}
+          onClearSelection={() => setSelectedTransactionIds([])}
+        />
+
         <div
   className="space-y-3 overflow-y-auto pr-2"
   style={{
@@ -3880,7 +4243,29 @@ function TransactionsPage({ form, setForm, resetForm, onSubmit, visibleTransacti
     scrollbarGutter: "stable",
   }}
 >
-          {visibleTransactions.length ? visibleTransactions.map((item) => <TransactionRow key={item.id} item={item} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} onView={onView} creditCards={creditCards} />) : <EmptyState title="Nenhum lançamento encontrado" text="Tente limpar filtros ou cadastrar uma nova receita/despesa." />}
+          {automaticTransactions.length > 0 && (
+            <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-3">
+              <button
+                type="button"
+                onClick={() => setShowAutomaticTransactions((value) => !value)}
+                className="flex w-full items-center justify-between gap-3 text-left text-sm font-black text-emerald-300"
+              >
+                <span>{showAutomaticTransactions ? "Ocultar" : "Mostrar"} {automaticTransactions.length} fixo(s) automático(s)</span>
+                <span>{showAutomaticTransactions ? "▲" : "▼"}</span>
+              </button>
+              <p className="muted-text mt-1 text-xs font-semibold">
+                Estes lançamentos entram nos cálculos do painel, mas ficam recolhidos para não misturar com lançamentos manuais.
+              </p>
+
+              {showAutomaticTransactions && (
+                <div className="mt-3 space-y-3">
+                  {automaticTransactions.map((item) => <TransactionRow key={item.id} item={item} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} onView={onView} creditCards={creditCards} selectable selected={selectedTransactionIds.includes(item.id)} onToggleSelect={toggleTransactionSelection} />)}
+                </div>
+              )}
+            </div>
+          )}
+
+          {manualTransactions.length ? manualTransactions.map((item) => <TransactionRow key={item.id} item={item} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} onView={onView} creditCards={creditCards} selectable selected={selectedTransactionIds.includes(item.id)} onToggleSelect={toggleTransactionSelection} />) : !automaticTransactions.length ? <EmptyState title="Nenhum lançamento encontrado" text="Tente limpar filtros ou cadastrar uma nova receita/despesa." /> : null}
         </div>
       </section>
     </main>
@@ -3897,7 +4282,7 @@ function TransactionDetailsModal({ open, transaction, creditCards = [], onClose,
   const hasNotes = Boolean(String(transaction.notes || "").trim());
 
   return (
-    <div className="edit-modal-backdrop fixed inset-0 z-[70] flex items-center justify-center px-4 py-4 sm:py-6" onClick={onClose} role="dialog" aria-modal="true" aria-label="Detalhes do lançamento">
+    <div className="edit-modal-backdrop fixed inset-0 z-[70] flex items-center justify-center px-4 py-4 sm:py-6" role="dialog" aria-modal="true" aria-label="Detalhes do lançamento">
       <div className="edit-modal-shell transaction-details-shell relative flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-[2.4rem] shadow-2xl sm:max-h-[92vh]" onClick={(event) => event.stopPropagation()}>
         <div className={classNames("edit-modal-hero relative overflow-hidden p-6 sm:p-7", isIncome ? "edit-modal-hero-emerald" : "edit-modal-hero-rose")}>
           <div className="edit-modal-glow edit-modal-glow-one" />
@@ -3966,7 +4351,7 @@ function EditGoalModal({ open, form, setForm, onSubmit, onClose }) {
   }
 
   return (
-    <div className="edit-modal-backdrop fixed inset-0 z-[70] flex items-center justify-center px-4 py-4 sm:py-6" onClick={onClose} role="dialog" aria-modal="true" aria-label="Editar meta">
+    <div className="edit-modal-backdrop fixed inset-0 z-[70] flex items-center justify-center px-4 py-4 sm:py-6" role="dialog" aria-modal="true" aria-label="Editar meta">
       <div className="edit-modal-shell relative flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-[2.4rem] shadow-2xl sm:max-h-[92vh]" onClick={(event) => event.stopPropagation()}>
         <div className="edit-modal-hero edit-modal-hero-emerald relative overflow-hidden p-6 sm:p-7">
           <div className="edit-modal-glow edit-modal-glow-one" />
@@ -4019,7 +4404,7 @@ function EditCardModal({ open, form, setForm, onSubmit, onClose }) {
   }
 
   return (
-    <div className="edit-modal-backdrop fixed inset-0 z-[70] flex items-center justify-center px-4 py-4 sm:py-6" onClick={onClose} role="dialog" aria-modal="true" aria-label="Editar cartão">
+    <div className="edit-modal-backdrop fixed inset-0 z-[70] flex items-center justify-center px-4 py-4 sm:py-6" role="dialog" aria-modal="true" aria-label="Editar cartão">
       <div className="edit-modal-shell relative flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-[2.4rem] shadow-2xl sm:max-h-[92vh]" onClick={(event) => event.stopPropagation()}>
         <div className="edit-modal-hero edit-modal-hero-income relative overflow-hidden p-6 sm:p-7">
           <div className="edit-modal-glow edit-modal-glow-one" />
@@ -4112,7 +4497,6 @@ function EditTransactionModal({ open, form, setForm, onSubmit, onClose, creditCa
   return (
     <div
       className="edit-modal-backdrop fixed inset-0 z-[70] flex items-center justify-center px-4 py-4 sm:py-6"
-      onClick={onClose}
       role="dialog"
       aria-modal="true"
       aria-label="Editar lançamento"
@@ -4537,9 +4921,9 @@ function RecurringPage({ recurringForm, setRecurringForm, recurringItems, onSubm
         <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="text-xl font-black">Itens fixos</h2>
-            <p className="muted-text text-sm">Gere os lançamentos de {monthLabel(selectedMonth)}.</p>
+            <p className="muted-text text-sm">Os fixos são lançados automaticamente em {monthLabel(selectedMonth)}.</p>
           </div>
-          <button onClick={onGenerate} className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-black text-white">Gerar mês</button>
+          <button onClick={onGenerate} className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-black text-white">Sincronizar fixos</button>
         </div>
         <div className="max-h-[400px] overflow-y-auto pr-2">
   <div className="space-y-3">
@@ -4590,7 +4974,6 @@ function EditRecurringModal({ open, form, setForm, onSubmit, onClose }) {
   return (
     <div
       className="edit-modal-backdrop fixed inset-0 z-[70] flex items-center justify-center px-4 py-4 sm:py-6"
-      onClick={onClose}
       role="dialog"
       aria-modal="true"
       aria-label="Editar item fixo"
@@ -5030,13 +5413,16 @@ function MiniInfo({ label, value }) {
 }
 
 
-function AnnualDashboardPage({ selectedYear, setSelectedYear, years, data, summary }) {
+function AnnualDashboardPage({ selectedYear, setSelectedYear, years, data, summary, onMonthClick }) {
   return (
     <main className="grid gap-6">
       <section className="surface-card rounded-[2rem] p-5 shadow-sm">
         <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
-            <h2 className="text-2xl font-black">Dashboard anual</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-2xl font-black">Dashboard anual</h2>
+              <InfoPopover title="Dashboard anual" text="Consolida receitas, despesas e saldo de janeiro a dezembro. Clique em um mês no gráfico para abrir o painel mensal daquele período." />
+            </div>
             <p className="muted-text text-sm">Visão consolidada de janeiro a dezembro.</p>
           </div>
           <select value={selectedYear} onChange={(event) => setSelectedYear(event.target.value)} className="input max-w-40">
@@ -5044,21 +5430,28 @@ function AnnualDashboardPage({ selectedYear, setSelectedYear, years, data, summa
           </select>
         </div>
         <section className="mb-6 grid gap-4 md:grid-cols-4">
-          <MetricCard title="Receitas no ano" value={money.format(summary.income)} icon={<ArrowUpCircle />} tone="emerald" />
-          <MetricCard title="Despesas no ano" value={money.format(summary.expense)} icon={<ArrowDownCircle />} tone="rose" />
-          <MetricCard title="Saldo anual" value={money.format(summary.balance)} icon={<Wallet />} tone={summary.balance >= 0 ? "blue" : "rose"} />
-          <MetricCard title="Média mensal" value={money.format(summary.averageSaving)} icon={<PiggyBank />} tone="amber" />
+          <MetricCard title="Receitas no ano" value={money.format(summary.income)} icon={<ArrowUpCircle />} tone="emerald" info="Soma de todas as receitas cadastradas no ano selecionado." />
+          <MetricCard title="Despesas no ano" value={money.format(summary.expense)} icon={<ArrowDownCircle />} tone="rose" info="Soma de todas as despesas cadastradas no ano selecionado." />
+          <MetricCard title="Saldo anual" value={money.format(summary.balance)} icon={<Wallet />} tone={summary.balance >= 0 ? "blue" : "rose"} info="Diferença entre receitas e despesas no ano selecionado." />
+          <MetricCard title="Média mensal" value={money.format(summary.averageSaving)} icon={<PiggyBank />} tone="amber" info="Média aproximada do saldo distribuído pelos 12 meses do ano." />
         </section>
         <ResponsiveContainer width="100%" height={340}>
-          <BarChart data={data}>
+          <BarChart data={data} onClick={(event) => event?.activePayload?.[0]?.payload?.month && onMonthClick?.(event.activePayload[0].payload.month)}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
             <XAxis dataKey="label" tick={{ fill: "var(--muted)" }} />
             <YAxis tickFormatter={(value) => `R$${value}`} tick={{ fill: "var(--muted)" }} />
             <Tooltip cursor={false} contentStyle={tooltipStyle()} formatter={(value) => money.format(value)} />
-            <Bar dataKey="income" name="Receita" fill="#059669" radius={[8, 8, 0, 0]} />
-            <Bar dataKey="expense" name="Despesa" fill="#e11d48" radius={[8, 8, 0, 0]} />
+            <Bar dataKey="income" name="Receita" fill="#059669" radius={[8, 8, 0, 0]} className="cursor-pointer" />
+            <Bar dataKey="expense" name="Despesa" fill="#e11d48" radius={[8, 8, 0, 0]} className="cursor-pointer" />
           </BarChart>
         </ResponsiveContainer>
+        <div className="mt-5 grid gap-2 sm:grid-cols-3 md:grid-cols-6 xl:grid-cols-12">
+          {data.map((item) => (
+            <button key={item.month} type="button" onClick={() => onMonthClick?.(item.month)} className="outline-button rounded-2xl px-3 py-2 text-xs font-black uppercase transition hover:scale-[1.02]">
+              {item.label}
+            </button>
+          ))}
+        </div>
       </section>
     </main>
   );
@@ -5128,12 +5521,19 @@ function SettingsPage({ preferencesForm, setPreferencesForm, onSubmit, exportBac
   );
 }
 
-function ReportsPage({ summary, selectedMonth, visibleTransactions, topExpenses, goals, exportCSV, exportPDF, exportBackup }) {
+function ReportsPage({ summary, selectedMonth, visibleTransactions, topExpenses, goals, exportCSV, exportPDF, exportBackup, onOpenTransactions, setPage }) {
   return (
     <main className="grid gap-6">
       <section className="surface-card rounded-[2rem] p-6 shadow-sm">
-        <h2 className="text-2xl font-black">Relatórios</h2>
-        <p className="muted-text mt-2">Gere arquivos para guardar, enviar ou analisar fora do sistema.</p>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-2xl font-black">Relatórios</h2>
+              <InfoPopover title="Relatórios" text="Área para exportar dados e acessar atalhos de análise do mês selecionado." />
+            </div>
+            <p className="muted-text mt-2">Gere arquivos para guardar, enviar ou analisar fora do sistema.</p>
+          </div>
+        </div>
         <div className="mt-6 flex flex-wrap gap-3">
           <button onClick={exportCSV} className="rounded-2xl bg-emerald-600 px-5 py-3 font-black text-white"><Download className="mr-2 inline" size={18} /> Exportar CSV</button>
           <button onClick={exportPDF} className="outline-button rounded-2xl px-5 py-3 font-black"><FileText className="mr-2 inline" size={18} /> Gerar PDF</button>
@@ -5141,15 +5541,44 @@ function ReportsPage({ summary, selectedMonth, visibleTransactions, topExpenses,
       </section>
 
       <section className="grid gap-4 md:grid-cols-4">
-        <MetricCard title={`Receitas em ${monthLabel(selectedMonth)}`} value={money.format(summary.income)} icon={<ArrowUpCircle />} tone="emerald" />
-        <MetricCard title="Despesas" value={money.format(summary.expense)} icon={<ArrowDownCircle />} tone="rose" />
-        <MetricCard title="Saldo" value={money.format(summary.balance)} icon={<Wallet />} tone={summary.balance >= 0 ? "blue" : "rose"} />
-        <MetricCard title="Lançamentos" value={String(visibleTransactions.length)} icon={<FileText />} tone="amber" />
+        <MetricCard title={`Receitas em ${monthLabel(selectedMonth)}`} value={money.format(summary.income)} icon={<ArrowUpCircle />} tone="emerald" onClick={() => onOpenTransactions?.({ types: ["income"] })} info="Clique para abrir os lançamentos filtrando apenas receitas deste mês." />
+        <MetricCard title="Despesas" value={money.format(summary.expense)} icon={<ArrowDownCircle />} tone="rose" onClick={() => onOpenTransactions?.({ types: ["expense"] })} info="Clique para abrir os lançamentos filtrando apenas despesas deste mês." />
+        <MetricCard title="Saldo" value={money.format(summary.balance)} icon={<Wallet />} tone={summary.balance >= 0 ? "blue" : "rose"} info="Receitas menos despesas do mês selecionado." />
+        <MetricCard title="Lançamentos" value={String(visibleTransactions.length)} icon={<FileText />} tone="amber" onClick={() => onOpenTransactions?.()} info="Quantidade de lançamentos encontrados com os filtros atuais." />
       </section>
 
       <section className="grid gap-6 lg:grid-cols-2">
-        <InfoList title="Top gastos do mês" items={topExpenses.map((item) => `${item.description} — ${money.format(item.amount)}`)} empty="Sem despesas no mês." />
-        <InfoList title="Metas cadastradas" items={goals.map((goal) => `${goal.title} — ${money.format(goal.current_amount)} de ${money.format(goal.target_amount)}`)} empty="Sem metas cadastradas." />
+        <section className="surface-card rounded-[2rem] p-5 shadow-sm">
+          <div className="mb-4 flex items-center gap-2">
+            <h2 className="text-xl font-black">Top gastos do mês</h2>
+            <InfoPopover title="Top gastos" text="Clique em um gasto para localizar lançamentos semelhantes na aba Lançamentos." />
+          </div>
+          <div className="space-y-3">
+            {topExpenses.length ? topExpenses.map((item) => (
+              <button key={item.id} type="button" onClick={() => onOpenTransactions?.({ categories: [item.category], types: ["expense"], search: item.description })} className="transaction-row interactive-row flex w-full items-center justify-between rounded-2xl p-3 text-left text-sm font-semibold">
+                <span>{item.description}</span>
+                <strong className="text-rose-500">{money.format(item.amount)}</strong>
+              </button>
+            )) : <EmptyState text="Sem despesas no mês." />}
+          </div>
+        </section>
+
+        <section className="surface-card rounded-[2rem] p-5 shadow-sm">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <h2 className="text-xl font-black">Metas cadastradas</h2>
+              <InfoPopover title="Metas cadastradas" text="Resumo das metas financeiras criadas. Clique para abrir a aba Metas." />
+            </div>
+            <button type="button" onClick={() => setPage?.("goals")} className="ghost-button rounded-xl px-3 py-2 text-sm font-bold">Abrir metas</button>
+          </div>
+          <div className="space-y-3">
+            {goals.length ? goals.map((goal) => (
+              <button key={goal.id} type="button" onClick={() => setPage?.("goals")} className="transaction-row interactive-row w-full rounded-2xl p-3 text-left text-sm font-semibold">
+                {goal.title} — {money.format(goal.current_amount)} de {money.format(goal.target_amount)}
+              </button>
+            )) : <EmptyState text="Sem metas cadastradas." />}
+          </div>
+        </section>
       </section>
     </main>
   );
@@ -5301,7 +5730,31 @@ function Field({ label, children }) {
   );
 }
 
-function MetricCard({ title, value, icon, tone }) {
+function InfoPopover({ title, text }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="info-popover relative" onClick={(event) => event.stopPropagation()}>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="info-popover-button inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-black"
+        aria-label={`Explicar ${title}`}
+        title="Explicar"
+      >
+        ?
+      </button>
+      {open && (
+        <div className="info-popover-card absolute right-0 top-8 z-[80] w-72 rounded-2xl p-4 text-left shadow-2xl">
+          <strong className="block text-sm font-black">{title}</strong>
+          <p className="muted-text mt-2 text-xs font-semibold leading-5">{text}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MetricCard({ title, value, icon, tone, onClick, info }) {
   const tones = {
     emerald: "metric-emerald",
     rose: "metric-rose",
@@ -5309,10 +5762,27 @@ function MetricCard({ title, value, icon, tone }) {
     amber: "metric-amber",
   };
 
+  function handleKeyDown(event) {
+    if (!onClick) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onClick();
+    }
+  }
+
   return (
-    <article className="surface-card rounded-[2rem] p-5 shadow-sm">
-      <div className="mb-4 flex items-center justify-between">
-        <p className="muted-text text-sm font-black">{title}</p>
+    <article
+      className={classNames("surface-card rounded-[2rem] p-5 shadow-sm", onClick && "interactive-card")}
+      onClick={onClick}
+      onKeyDown={handleKeyDown}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+    >
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <p className="muted-text truncate text-sm font-black">{title}</p>
+          {info && <InfoPopover title={title} text={info} />}
+        </div>
         <div className={classNames("rounded-2xl p-2", tones[tone])}>{React.cloneElement(icon, { size: 22 })}</div>
       </div>
       <strong className="block text-2xl font-black tracking-tight">{value}</strong>
@@ -5320,19 +5790,24 @@ function MetricCard({ title, value, icon, tone }) {
   );
 }
 
-function ChartCard({ title, subtitle, children }) {
+function ChartCard({ title, subtitle, children, info }) {
   return (
     <section className="surface-card rounded-[2rem] p-5 shadow-sm">
-      <div className="mb-4">
-        <h2 className="text-xl font-black">{title}</h2>
-        <p className="muted-text text-sm">{subtitle}</p>
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <h2 className="text-xl font-black">{title}</h2>
+            {info && <InfoPopover title={title} text={info} />}
+          </div>
+          <p className="muted-text text-sm">{subtitle}</p>
+        </div>
       </div>
       {children}
     </section>
   );
 }
 
-function TransactionRow({ item, onEdit, onDelete, onDuplicate, onView, creditCards = [] }) {
+function TransactionRow({ item, onEdit, onDelete, onDuplicate, onView, creditCards = [], selectable = false, selected = false, onToggleSelect }) {
   const isIncome = item.type === "income";
   const cardName = creditCards.find((card) => card.id === item.card_id)?.name;
   function handleKeyDown(event) {
@@ -5352,6 +5827,11 @@ function TransactionRow({ item, onEdit, onDelete, onDuplicate, onView, creditCar
       title={onView ? "Clique para ver detalhes do lançamento" : undefined}
     >
       <div className="flex min-w-0 items-start gap-3">
+        {selectable && (
+          <label className="transaction-check mt-2 inline-flex h-6 w-6 shrink-0 cursor-pointer items-center justify-center rounded-lg" onClick={(event) => event.stopPropagation()} title={selected ? "Remover da soma selecionada" : "Adicionar à soma selecionada"}>
+            <input type="checkbox" checked={selected} onChange={() => onToggleSelect?.(item.id)} className="h-4 w-4 accent-emerald-500" />
+          </label>
+        )}
         <div className={classNames("rounded-2xl p-2", isIncome ? "income-icon" : "expense-icon")}>
           {isIncome ? <ArrowUpCircle size={22} /> : <ArrowDownCircle size={22} />}
         </div>
@@ -5360,6 +5840,11 @@ function TransactionRow({ item, onEdit, onDelete, onDuplicate, onView, creditCar
           <p className="muted-text text-sm">
             {item.category} · {item.method}{cardName ? ` · ${cardName}` : ""} · {formatDateBR(item.date)}
           </p>
+          {(item.recurring_item_id || item.recurrence_month) && (
+            <span className="mt-2 inline-flex rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1 text-xs font-black text-emerald-300">
+              Fixo automático
+            </span>
+          )}
         </div>
       </div>
 
@@ -5653,6 +6138,31 @@ function GlobalStyles() {
       button:disabled, input:disabled, select:disabled { cursor: not-allowed; }
       input::placeholder { color: var(--muted); }
       select option { background: var(--surface); color: var(--text); }
+
+
+
+      .summary-panel { background: color-mix(in srgb, var(--surface-2) 88%, transparent); border: 1px solid color-mix(in srgb, var(--border) 82%, transparent); }
+      .summary-mini-card { border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+      .summary-mini-emerald { border-color: rgba(16, 185, 129, 0.22); background: rgba(16, 185, 129, 0.08); }
+      .summary-mini-rose { border-color: rgba(244, 63, 94, 0.22); background: rgba(244, 63, 94, 0.08); }
+      .summary-mini-blue { border-color: rgba(37, 99, 235, 0.22); background: rgba(37, 99, 235, 0.08); }
+      .summary-mini-amber { border-color: rgba(245, 158, 11, 0.22); background: rgba(245, 158, 11, 0.08); }
+      .summary-selected { background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.18); }
+      .transaction-check { background: rgba(148, 163, 184, 0.1); border: 1px solid var(--border); transition: background-color 0.2s ease, border-color 0.2s ease; }
+      .transaction-check:hover { background: rgba(16, 185, 129, 0.12); border-color: rgba(16, 185, 129, 0.35); }
+      .interactive-card, .interactive-row { cursor: pointer; transition: transform 0.2s ease, border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease; }
+      .interactive-card:hover, .interactive-row:hover { transform: translateY(-2px); border-color: rgba(16, 185, 129, 0.36); box-shadow: var(--shadow); }
+      .interactive-card:focus-visible, .interactive-row:focus-visible { outline: 3px solid rgba(16, 185, 129, 0.35); outline-offset: 3px; }
+      .info-popover-button { background: rgba(148, 163, 184, 0.12); color: var(--muted); border: 1px solid var(--border); transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease; }
+      .info-popover-button:hover { background: rgba(16, 185, 129, 0.12); color: #34d399; border-color: rgba(16, 185, 129, 0.35); }
+      .info-popover-card { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
+      .theme-light .info-popover-card { background: #ffffff; border-color: #dbe5ef; box-shadow: 0 18px 45px rgba(15, 23, 42, 0.14); }
+      .multi-filter-menu { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
+      .multi-filter-option { color: var(--text); transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease; }
+      .multi-filter-option:hover { background: var(--hover); }
+      .multi-filter-option-active { background: rgba(16, 185, 129, 0.12); color: #34d399; }
+      .theme-light .multi-filter-menu { background: #ffffff; border-color: #dbe5ef; box-shadow: 0 18px 45px rgba(15, 23, 42, 0.12); }
+      .theme-light .multi-filter-option-active { background: #ecfdf5; color: #047857; }
       .theme-button { background: var(--text); color: var(--bg); }
       .outline-button { border: 1px solid var(--border); color: var(--text); background: color-mix(in srgb, var(--surface) 86%, transparent); }
       .outline-button:hover, .ghost-button:hover, .icon-button:hover { background: var(--hover); }
