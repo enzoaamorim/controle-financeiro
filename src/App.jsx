@@ -54,6 +54,7 @@ import {
 
 const THEME_KEY = "controle-financeiro-theme";
 const EMAIL_CONFIRMATION_TARGET_KEY = "controle-financeiro-email-confirmation-target";
+const PASSWORD_RECOVERY_TARGET_KEY = "controle-financeiro-password-recovery-target";
 const MINIMUM_LOADING_TIME_MS = 1500;
 
 const money = new Intl.NumberFormat("pt-BR", {
@@ -449,6 +450,21 @@ function hasAuthRedirectParams() {
   );
 }
 
+function hasPasswordRecoveryRedirectParams() {
+  if (typeof window === "undefined") return false;
+
+  const params = new URLSearchParams(window.location.search);
+  const hashParams = new URLSearchParams(window.location.hash.replace("#", ""));
+
+  return (
+    params.get("auth") === "recovery" ||
+    params.get("type") === "recovery" ||
+    params.get("next") === "reset-password" ||
+    hashParams.get("type") === "recovery" ||
+    window.location.pathname.includes("reset-password")
+  );
+}
+
 function markEmailConfirmationTarget() {
   try {
     localStorage.setItem(EMAIL_CONFIRMATION_TARGET_KEY, "dashboard");
@@ -473,6 +489,35 @@ function clearEmailConfirmationTarget() {
   try {
     localStorage.removeItem(EMAIL_CONFIRMATION_TARGET_KEY);
     sessionStorage.removeItem(EMAIL_CONFIRMATION_TARGET_KEY);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function markPasswordRecoveryTarget() {
+  try {
+    localStorage.setItem(PASSWORD_RECOVERY_TARGET_KEY, "update-password");
+    sessionStorage.setItem(PASSWORD_RECOVERY_TARGET_KEY, "update-password");
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function shouldOpenPasswordUpdateAfterRecovery() {
+  try {
+    return (
+      localStorage.getItem(PASSWORD_RECOVERY_TARGET_KEY) === "update-password" ||
+      sessionStorage.getItem(PASSWORD_RECOVERY_TARGET_KEY) === "update-password"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function clearPasswordRecoveryTarget() {
+  try {
+    localStorage.removeItem(PASSWORD_RECOVERY_TARGET_KEY);
+    sessionStorage.removeItem(PASSWORD_RECOVERY_TARGET_KEY);
   } catch {
     // ignore storage errors
   }
@@ -571,9 +616,22 @@ export default function ControleFinanceiroCompleto() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, currentSession) => {
+    } = supabase.auth.onAuthStateChange((event, currentSession) => {
       setSession(currentSession);
       setAuthLoading(false);
+
+      const isActiveTab = typeof document === "undefined" || document.visibilityState === "visible";
+
+      if (event === "PASSWORD_RECOVERY") {
+        markPasswordRecoveryTarget();
+      }
+
+      if ((event === "PASSWORD_RECOVERY" && isActiveTab) || (currentSession && (hasPasswordRecoveryRedirectParams() || (shouldOpenPasswordUpdateAfterRecovery() && isActiveTab)))) {
+        setSystemMessage("Link validado. Crie uma nova senha para continuar.");
+        setAuthMode("update-password");
+        setScreen("auth");
+        return;
+      }
 
       if (currentSession && (hasAuthRedirectParams() || shouldOpenDashboardAfterConfirmation())) {
         clearEmailConfirmationTarget();
@@ -587,9 +645,15 @@ export default function ControleFinanceiroCompleto() {
 
   useEffect(() => {
     if (!authLoading && !firstLoadRef.current) {
-      const shouldGoDashboard = Boolean(session) && (hasAuthRedirectParams() || shouldOpenDashboardAfterConfirmation());
+      const isActiveTab = typeof document === "undefined" || document.visibilityState === "visible";
+      const isPasswordRecovery = hasPasswordRecoveryRedirectParams() || (shouldOpenPasswordUpdateAfterRecovery() && isActiveTab);
+      const shouldGoDashboard = Boolean(session) && !isPasswordRecovery && (hasAuthRedirectParams() || shouldOpenDashboardAfterConfirmation());
 
-      if (shouldGoDashboard) {
+      if (isPasswordRecovery) {
+        setSystemMessage("Link validado. Crie uma nova senha para continuar.");
+        setAuthMode("update-password");
+        setScreen("auth");
+      } else if (shouldGoDashboard) {
         clearEmailConfirmationTarget();
         setSystemMessage("E-mail confirmado com sucesso. Bem-vindo ao seu painel financeiro.");
         setScreen("dashboard");
@@ -604,13 +668,44 @@ export default function ControleFinanceiroCompleto() {
   useEffect(() => {
     if (authLoading) return;
 
-    async function handleEmailConfirmationRedirect() {
+    async function handleAuthRedirect() {
       const params = new URLSearchParams(window.location.search);
       const hashParams = new URLSearchParams(window.location.hash.replace("#", ""));
       const authStatus = params.get("auth");
       const authType = params.get("type") || hashParams.get("type");
       const code = params.get("code");
       const hasAccessToken = hashParams.has("access_token") || hashParams.has("refresh_token");
+      const isActiveTab = typeof document === "undefined" || document.visibilityState === "visible";
+      const isPasswordRecovery = authStatus === "recovery" || authType === "recovery" || params.get("next") === "reset-password" || (shouldOpenPasswordUpdateAfterRecovery() && isActiveTab);
+
+      if (isPasswordRecovery) {
+        try {
+          let currentSession = session;
+
+          if (code) {
+            const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+            if (error) throw error;
+            currentSession = data?.session || null;
+          }
+
+          if (!currentSession) {
+            const { data } = await supabase.auth.getSession();
+            currentSession = data?.session || null;
+          }
+
+          setSession(currentSession);
+          setSystemMessage("Link validado. Crie uma nova senha para continuar.");
+          setAuthMode("update-password");
+          setScreen("auth");
+        } catch {
+          setSystemMessage("Não foi possível validar o link de recuperação. Solicite um novo link.");
+          setAuthMode("reset");
+          setScreen("auth");
+        } finally {
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
+        return;
+      }
 
       const isEmailConfirmation =
         authStatus === "confirmed" ||
@@ -655,7 +750,7 @@ export default function ControleFinanceiroCompleto() {
       }
     }
 
-    handleEmailConfirmationRedirect();
+    handleAuthRedirect();
   }, [authLoading, session]);
 
   function goToAuth(mode = "login") {
@@ -1762,8 +1857,11 @@ function AuthScreen({ mode, setMode, onBack, onSuccess, systemMessage }) {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [message, setMessage] = useState(systemMessage || "");
   const [loading, setLoading] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+  const [resetCooldown, setResetCooldown] = useState(0);
   const isLogin = mode === "login";
   const isReset = mode === "reset";
+  const isUpdatePassword = mode === "update-password";
 
   const normalizedEmail = email.trim().toLowerCase();
   const emailValidationMessage = useMemo(() => validateEmail(email), [email]);
@@ -1781,9 +1879,18 @@ function AuthScreen({ mode, setMode, onBack, onSuccess, systemMessage }) {
   const passwordStrength = Object.values(passwordChecks).filter(Boolean).length;
   const passwordsMatch = !confirmPassword || password === confirmPassword;
 
+  const subtitleText = isUpdatePassword
+    ? "Digite e confirme sua nova senha para voltar ao painel."
+    : isReset
+      ? "Informe seu e-mail para receber um link seguro."
+      : isLogin
+        ? "Entre na sua conta"
+        : "Crie sua conta";
+
   useEffect(() => {
-    setMessage(systemMessage || "");
-  }, [systemMessage]);
+    const isRecoveryMessage = String(systemMessage || "").toLowerCase().includes("link validado");
+    setMessage(isRecoveryMessage && mode !== "update-password" ? "" : systemMessage || "");
+  }, [systemMessage, mode]);
 
   useEffect(() => {
     setEmailTouched(false);
@@ -1791,7 +1898,25 @@ function AuthScreen({ mode, setMode, onBack, onSuccess, systemMessage }) {
     setConfirmPassword("");
     setShowPassword(false);
     setShowConfirmPassword(false);
+    setResetSent(false);
+    setResetCooldown(0);
   }, [mode]);
+
+  useEffect(() => {
+    if (!resetCooldown) return;
+    const timer = window.setInterval(() => {
+      setResetCooldown((current) => Math.max(0, current - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [resetCooldown]);
+
+  useEffect(() => {
+    if (!isUpdatePassword) return;
+    const timer = window.setTimeout(() => {
+      clearPasswordRecoveryTarget();
+    }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [isUpdatePassword]);
 
   async function handleAuth(event) {
     event.preventDefault();
@@ -1799,8 +1924,29 @@ function AuthScreen({ mode, setMode, onBack, onSuccess, systemMessage }) {
     setMessage("");
 
     try {
-      setEmailTouched(true);
       const trimmedName = name.trim();
+
+      if (isUpdatePassword) {
+        if (password.length < 6) {
+          setMessage("A nova senha precisa ter pelo menos 6 caracteres.");
+          return;
+        }
+
+        if (password !== confirmPassword) {
+          setMessage("As senhas não conferem. Verifique e tente novamente.");
+          return;
+        }
+
+        const { error } = await supabase.auth.updateUser({ password });
+        if (error) throw error;
+
+        clearPasswordRecoveryTarget();
+        setMessage("Senha atualizada com sucesso. Redirecionando para seu painel...");
+        window.setTimeout(() => onSuccess(), 900);
+        return;
+      }
+
+      setEmailTouched(true);
       const emailError = validateEmail(normalizedEmail);
 
       if (emailError) {
@@ -1809,12 +1955,15 @@ function AuthScreen({ mode, setMode, onBack, onSuccess, systemMessage }) {
       }
 
       if (isReset) {
+        markPasswordRecoveryTarget();
         const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
-          redirectTo: window.location.origin,
+          redirectTo: `${window.location.origin}?auth=recovery&next=reset-password`,
         });
 
         if (error) throw error;
-        setMessage("Enviamos um link de recuperação para o seu e-mail.");
+        setResetSent(true);
+        setResetCooldown(60);
+        setMessage("");
         return;
       }
 
@@ -1879,54 +2028,66 @@ function AuthScreen({ mode, setMode, onBack, onSuccess, systemMessage }) {
         <div className="mb-6 text-center">
           <img src={logoEA} alt="Logo" className="mx-auto mb-4 h-16 w-16 rounded-2xl" />
           <h1 className="text-3xl font-black">Controle Financeiro</h1>
-          <p className="muted-text mt-2 text-sm">
-            {isReset ? "Recupere sua senha" : isLogin ? "Entre na sua conta" : "Crie sua conta"}
-          </p>
+          <p className="muted-text mt-2 text-sm">{subtitleText}</p>
         </div>
 
+        {isUpdatePassword && (
+          <div className="mb-5 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4 text-sm font-semibold leading-6 text-emerald-300">
+            Link validado. Agora escolha uma nova senha para proteger sua conta.
+          </div>
+        )}
+
+        {isReset && !resetSent && (
+          <p className="mb-5 text-center text-sm font-semibold leading-6 text-slate-400">
+            Enviaremos um link seguro para você criar uma nova senha.
+          </p>
+        )}
+
         <form onSubmit={handleAuth} className="space-y-4">
-          {!isLogin && !isReset && (
+          {!isLogin && !isReset && !isUpdatePassword && (
             <Field label="Nome">
               <input value={name} onChange={(event) => setName(event.target.value)} className="input" placeholder="Seu nome" required />
             </Field>
           )}
 
-          <Field label="E-mail">
-            <input
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              onBlur={() => {
-                setEmail(normalizedEmail);
-                setEmailTouched(true);
-              }}
-              className={classNames("input", shouldShowEmailValidation && emailValidationMessage ? "input-error" : "")}
-              placeholder="seuemail@email.com"
-              autoComplete="email"
-              inputMode="email"
-              spellCheck={false}
-              required
-            />
-            {shouldShowEmailValidation && emailValidationMessage && (
-              <p className="mt-2 rounded-2xl border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs font-bold text-rose-300">
-                {emailValidationMessage}
-              </p>
-            )}
-            {shouldShowEmailValidation && !emailValidationMessage && (
-              <p className="mt-2 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-300">
-                E-mail válido.
-              </p>
-            )}
-          </Field>
+          {!isUpdatePassword && (
+            <Field label="E-mail">
+              <input
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                onBlur={() => {
+                  setEmail(normalizedEmail);
+                  setEmailTouched(true);
+                }}
+                className={classNames("input", shouldShowEmailValidation && emailValidationMessage ? "input-error" : "")}
+                placeholder="seuemail@email.com"
+                autoComplete="email"
+                inputMode="email"
+                spellCheck={false}
+                required
+              />
+              {shouldShowEmailValidation && emailValidationMessage && (
+                <p className="mt-2 rounded-2xl border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs font-bold text-rose-300">
+                  {emailValidationMessage}
+                </p>
+              )}
+              {shouldShowEmailValidation && !emailValidationMessage && (
+                <p className="mt-2 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs font-bold text-emerald-300">
+                  E-mail válido.
+                </p>
+              )}
+            </Field>
+          )}
 
-          {!isReset && (
+          {(!isReset || isUpdatePassword) && (
             <PasswordInput
-              label="Senha"
+              label={isUpdatePassword ? "Nova senha" : "Senha"}
               value={password}
               onChange={setPassword}
               show={showPassword}
               onToggle={() => setShowPassword((value) => !value)}
-              placeholder="Digite sua senha"
+              placeholder={isUpdatePassword ? "Digite a nova senha" : "Digite sua senha"}
               autoComplete={isLogin ? "current-password" : "new-password"}
             />
           )}
@@ -1934,12 +2095,12 @@ function AuthScreen({ mode, setMode, onBack, onSuccess, systemMessage }) {
           {!isLogin && !isReset && (
             <>
               <PasswordInput
-                label="Confirmar senha"
+                label={isUpdatePassword ? "Confirmar nova senha" : "Confirmar senha"}
                 value={confirmPassword}
                 onChange={setConfirmPassword}
                 show={showConfirmPassword}
                 onToggle={() => setShowConfirmPassword((value) => !value)}
-                placeholder="Digite a senha novamente"
+                placeholder={isUpdatePassword ? "Digite a nova senha novamente" : "Digite a senha novamente"}
                 autoComplete="new-password"
               />
 
@@ -1976,21 +2137,33 @@ function AuthScreen({ mode, setMode, onBack, onSuccess, systemMessage }) {
             </>
           )}
 
-          {message && <p className="rounded-2xl bg-slate-500/10 p-3 text-sm font-semibold text-emerald-400">{message}</p>}
+          {resetSent && isReset && (
+            <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4 text-sm font-semibold leading-6 text-emerald-300">
+              Link enviado. Verifique sua caixa de entrada, spam ou lixo eletrônico.
+            </div>
+          )}
 
-          <button disabled={loading} className="w-full rounded-2xl bg-emerald-600 px-4 py-3 font-black text-white transition hover:bg-emerald-700 disabled:opacity-60">
-            {loading ? "Aguarde..." : isReset ? "Enviar link" : isLogin ? "Entrar" : "Cadastrar"}
+          {message && !(isReset && resetSent) && <p className="rounded-2xl bg-slate-500/10 p-3 text-sm font-semibold text-emerald-400">{message}</p>}
+
+          <button disabled={loading || (isReset && resetCooldown > 0)} className="w-full rounded-2xl bg-emerald-600 px-4 py-3 font-black text-white transition hover:bg-emerald-700 disabled:opacity-60">
+            {loading ? "Aguarde..." : isUpdatePassword ? "Salvar nova senha" : isReset ? (resetSent && resetCooldown > 0 ? `Reenviar em ${resetCooldown}s` : resetSent ? "Reenviar link" : "Enviar link") : isLogin ? "Entrar" : "Cadastrar"}
           </button>
         </form>
 
         <div className="mt-5 grid gap-2 text-center text-sm font-bold">
-          {!isReset && (
+          {!isReset && !isUpdatePassword && (
             <button onClick={() => setMode(isLogin ? "signup" : "login")} className="text-emerald-400 hover:text-emerald-300">
               {isLogin ? "Ainda não tenho conta" : "Já tenho conta, fazer login"}
             </button>
           )}
-          <button onClick={() => setMode(isReset ? "login" : "reset")} className="muted-text hover:text-emerald-400">
-            {isReset ? "Voltar para o login" : "Esqueci minha senha"}
+          <button
+            onClick={() => {
+              if (isUpdatePassword) clearPasswordRecoveryTarget();
+              setMode(isReset || isUpdatePassword ? "login" : "reset");
+            }}
+            className="muted-text hover:text-emerald-400"
+          >
+            {isReset ? "Já lembrei minha senha" : isUpdatePassword ? "Voltar para o login" : "Esqueci minha senha"}
           </button>
         </div>
       </div>
@@ -3284,7 +3457,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
       item.notes || "",
     ]);
 
-    const csv = [headers, ...rows]
+    const csv = "﻿sep=;" + String.fromCharCode(10) + [headers, ...rows]
       .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(";"))
       .join(String.fromCharCode(10));
 
@@ -3298,19 +3471,274 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     showToast("CSV exportado com sucesso.", "success");
   }
 
+  async function exportExcel() {
+    try {
+      const XLSX = await import("xlsx");
+      const generatedAt = new Date();
+      const cardNameById = new Map(creditCards.map((card) => [card.id, card.name]));
+      const automaticTransactions = visibleTransactions.filter((item) => item.recurring_item_id || item.recurrence_month);
+
+      function transactionOrigin(item) {
+        if (item.recurring_item_id || item.recurrence_month) return "Fixo automático";
+        if (item.installment_total) return "Parcelado";
+        return "Manual";
+      }
+
+      function autoSize(sheet, widths) {
+        if (widths?.length) {
+          sheet["!cols"] = widths.map((width) => ({ wch: width }));
+        }
+        return sheet;
+      }
+
+      const workbook = XLSX.utils.book_new();
+      workbook.Props = {
+        Title: `Controle Financeiro - ${selectedMonth}`,
+        Subject: "Relatório financeiro",
+        Author: "Controle Financeiro",
+        CreatedDate: generatedAt,
+      };
+
+      const resumoRows = [
+        ["Controle Financeiro"],
+        ["Período", monthLabel(selectedMonth)],
+        ["Usuário", userName],
+        ["Gerado em", generatedAt.toLocaleDateString("pt-BR")],
+        ["Horário", generatedAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })],
+        [],
+        ["Indicador", "Valor"],
+        ["Receitas", summary.income],
+        ["Despesas", summary.expense],
+        ["Saldo", summary.balance],
+        ["Economia (%)", Number(summary.savingRate || 0)],
+        ["Lançamentos", visibleTransactions.length],
+        ["Saúde financeira", financialHealth.label],
+      ];
+      const resumoSheet = autoSize(XLSX.utils.aoa_to_sheet(resumoRows), [24, 22]);
+      XLSX.utils.book_append_sheet(workbook, resumoSheet, "Resumo");
+
+      const categoriasRows = [
+        ["Categoria", "Valor", "Participação (%)"],
+        ...expenseByCategory.map((item) => {
+          const share = summary.expense > 0 ? Number((((Number(item.value || 0) / summary.expense) * 100).toFixed(2))) : 0;
+          return [item.name, Number(item.value || 0), share];
+        }),
+      ];
+      const categoriasSheet = autoSize(XLSX.utils.aoa_to_sheet(categoriasRows), [28, 18, 18]);
+      XLSX.utils.book_append_sheet(workbook, categoriasSheet, "Categorias");
+
+      const cartoesRows = [
+        ["Cartão", "Tipo", "Limite", "Usado", "Disponível", "Uso (%)", "Fechamento", "Vencimento", "Status"],
+        ...cardUsage.map((card) => [
+          card.name,
+          formatCardType(card.card_type),
+          Number(card.card_limit || 0),
+          Number(card.spent || 0),
+          Number(card.available || 0),
+          Number(card.percent || 0),
+          formatCardClosingDay(card.closing_day),
+          formatCardDueDay(card.due_day),
+          card.is_active ? "Ativo" : "Inativo",
+        ]),
+      ];
+      const cartoesSheet = autoSize(XLSX.utils.aoa_to_sheet(cartoesRows), [24, 20, 16, 16, 16, 12, 18, 18, 12]);
+      XLSX.utils.book_append_sheet(workbook, cartoesSheet, "Cartões");
+
+      const fixosRows = [
+        ["Data", "Tipo", "Descrição", "Categoria", "Forma de pagamento", "Cartão", "Valor", "Origem"],
+        ...automaticTransactions.map((item) => [
+          formatDateBR(item.date),
+          item.type === "income" ? "Receita" : "Despesa",
+          item.description,
+          item.category,
+          item.method || "",
+          item.card_id ? cardNameById.get(item.card_id) || "" : "",
+          Number(item.amount || 0),
+          transactionOrigin(item),
+        ]),
+      ];
+      const fixosSheet = autoSize(XLSX.utils.aoa_to_sheet(fixosRows), [14, 12, 30, 20, 22, 24, 16, 18]);
+      XLSX.utils.book_append_sheet(workbook, fixosSheet, "Fixos automáticos");
+
+      const topRows = [
+        ["Descrição", "Categoria", "Valor"],
+        ...topExpenses.map((item) => [item.description, item.category, Number(item.amount || 0)]),
+      ];
+      const topSheet = autoSize(XLSX.utils.aoa_to_sheet(topRows), [34, 22, 16]);
+      XLSX.utils.book_append_sheet(workbook, topSheet, "Top gastos");
+
+      const metasRows = [
+        ["Meta", "Valor atual", "Valor alvo", "Progresso (%)", "Prazo"],
+        ...goals.map((goal) => {
+          const goalPercent = goal.target_amount > 0 ? Math.min(100, Math.round((goal.current_amount / goal.target_amount) * 100)) : 0;
+          return [
+            goal.title,
+            Number(goal.current_amount || 0),
+            Number(goal.target_amount || 0),
+            goalPercent,
+            goal.deadline ? formatDateBR(goal.deadline) : "",
+          ];
+        }),
+      ];
+      const metasSheet = autoSize(XLSX.utils.aoa_to_sheet(metasRows), [34, 16, 16, 16, 14]);
+      XLSX.utils.book_append_sheet(workbook, metasSheet, "Metas");
+
+      const lancamentosRows = [
+        ["Data", "Tipo", "Descrição", "Categoria", "Forma de pagamento", "Cartão", "Parcela", "Origem", "Valor", "Observações"],
+        ...visibleTransactions.map((item) => [
+          formatDateBR(item.date),
+          item.type === "income" ? "Receita" : "Despesa",
+          item.description,
+          item.category,
+          item.method || "",
+          item.card_id ? cardNameById.get(item.card_id) || "" : "",
+          item.installment_total ? `${item.installment_number}/${item.installment_total}` : "",
+          transactionOrigin(item),
+          Number(item.amount || 0),
+          item.notes || "",
+        ]),
+      ];
+      const lancamentosSheet = autoSize(XLSX.utils.aoa_to_sheet(lancamentosRows), [14, 12, 34, 22, 22, 24, 12, 18, 16, 38]);
+      XLSX.utils.book_append_sheet(workbook, lancamentosSheet, "Lançamentos");
+
+      function applyFormatToColumn(sheetName, columnIndex, format, startRow = 1) {
+        const ws = workbook.Sheets[sheetName];
+        if (!ws || !ws["!ref"]) return;
+        const range = XLSX.utils.decode_range(ws["!ref"]);
+        for (let row = startRow; row <= range.e.r; row += 1) {
+          const ref = XLSX.utils.encode_cell({ r: row, c: columnIndex });
+          if (ws[ref] && typeof ws[ref].v === "number") {
+            ws[ref].z = format;
+          }
+        }
+      }
+
+      [
+        { row: 7, format: 'R$ #,##0.00' },
+        { row: 8, format: 'R$ #,##0.00' },
+        { row: 9, format: 'R$ #,##0.00' },
+        { row: 10, format: '0.00%' },
+      ].forEach(({ row, format }) => {
+        const ref = XLSX.utils.encode_cell({ r: row, c: 1 });
+        if (workbook.Sheets["Resumo"][ref]) workbook.Sheets["Resumo"][ref].z = format;
+      });
+      applyFormatToColumn("Categorias", 1, 'R$ #,##0.00');
+      applyFormatToColumn("Categorias", 2, '0.00%');
+      [2, 3, 4].forEach((column) => applyFormatToColumn("Cartões", column, 'R$ #,##0.00'));
+      applyFormatToColumn("Cartões", 5, '0.00%');
+      applyFormatToColumn("Fixos automáticos", 6, 'R$ #,##0.00');
+      applyFormatToColumn("Top gastos", 2, 'R$ #,##0.00');
+      [1, 2].forEach((column) => applyFormatToColumn("Metas", column, 'R$ #,##0.00'));
+      applyFormatToColumn("Metas", 3, '0%');
+      applyFormatToColumn("Lançamentos", 8, 'R$ #,##0.00');
+
+      XLSX.writeFile(workbook, `controle-financeiro-${selectedMonth}.xlsx`);
+      showToast("Excel com abas exportado com sucesso.", "success");
+    } catch (error) {
+      console.error(error);
+      showToast('Para exportar em Excel com abas, instale a biblioteca: npm install xlsx', 'error');
+    }
+  }
+
   function exportPDF() {
-    const incomePercent = summary.income > 0 ? Math.max(0, Math.round((summary.balance / summary.income) * 100)) : 0;
+    const economyPercent = Number(summary.savingRate || 0);
     const health = financialHealth;
+    const generatedAt = new Date();
+    const previousMonthLabel = monthLabel(previousMonthValue(selectedMonth));
+    const automaticTransactions = visibleTransactions.filter((item) => item.recurring_item_id || item.recurrence_month);
+    const manualTransactions = visibleTransactions.filter((item) => !item.recurring_item_id && !item.recurrence_month);
+    const cardNameById = new Map(creditCards.map((card) => [card.id, card.name]));
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function signedMoney(value) {
+      const number = Number(value || 0);
+      return `${number >= 0 ? "+" : ""}${money.format(number)}`;
+    }
+
+    function percent(value, max) {
+      const current = Number(value || 0);
+      const total = Number(max || 0);
+      if (!total) return 0;
+      return Math.max(0, Math.min(100, Math.round((current / total) * 100)));
+    }
+
+    const executiveText = summary.balance < 0
+      ? `O mês fechou com saldo negativo de ${money.format(Math.abs(summary.balance))}. As despesas superaram as receitas e vale revisar os maiores gastos do período.`
+      : `O mês fechou com saldo positivo de ${money.format(summary.balance)}. O resultado indica sobra financeira no período selecionado.`;
+
+    const comparisonRows = [
+      ["Receitas", summary.income, previousSummary.income],
+      ["Despesas", summary.expense, previousSummary.expense],
+      ["Saldo", summary.balance, previousSummary.balance],
+    ];
+
+    const comparisonHtml = comparisonRows
+      .map(([label, current, previous]) => {
+        const diff = Number(current || 0) - Number(previous || 0);
+        const tone = diff >= 0 ? "positive" : "negative";
+        return `<tr><td>${label}</td><td class="money">${money.format(current)}</td><td class="money">${money.format(previous)}</td><td class="money ${tone}">${signedMoney(diff)}</td></tr>`;
+      })
+      .join("");
+
+    const categoryHtml = expenseByCategory
+      .map((item) => {
+        const share = summary.expense > 0 ? Math.round((Number(item.value || 0) / summary.expense) * 100) : 0;
+        return `<tr><td>${escapeHtml(item.name)}</td><td><div class="bar"><span style="width:${Math.min(100, share)}%"></span></div></td><td>${share}%</td><td class="money">${money.format(item.value)}</td></tr>`;
+      })
+      .join("") || `<tr><td colspan="4" class="muted">Sem despesas por categoria neste mês.</td></tr>`;
+
     const topExpensesHtml = topExpenses
-      .map((item) => `<tr><td>${item.description}</td><td>${item.category}</td><td class="money">${money.format(item.amount)}</td></tr>`)
-      .join("") || `<tr><td colspan="3" class="muted">Sem despesas no mês.</td></tr>`;
+      .map((item) => `<tr><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.category)}</td><td>${escapeHtml(item.method || "-")}</td><td class="money">${money.format(item.amount)}</td></tr>`)
+      .join("") || `<tr><td colspan="4" class="muted">Sem despesas no mês.</td></tr>`;
+
     const goalsHtml = goals
       .slice(0, 8)
       .map((goal) => {
-        const percent = goal.target_amount > 0 ? Math.min(100, Math.round((goal.current_amount / goal.target_amount) * 100)) : 0;
-        return `<tr><td>${goal.title}</td><td>${percent}%</td><td class="money">${money.format(goal.current_amount)} de ${money.format(goal.target_amount)}</td></tr>`;
+        const goalPercent = goal.target_amount > 0 ? Math.min(100, Math.round((goal.current_amount / goal.target_amount) * 100)) : 0;
+        return `<tr><td>${escapeHtml(goal.title)}</td><td><div class="bar"><span style="width:${goalPercent}%"></span></div></td><td>${goalPercent}%</td><td class="money">${money.format(goal.current_amount)} de ${money.format(goal.target_amount)}</td></tr>`;
       })
-      .join("") || `<tr><td colspan="3" class="muted">Sem metas cadastradas.</td></tr>`;
+      .join("") || `<tr><td colspan="4" class="muted">Sem metas cadastradas.</td></tr>`;
+
+    const cardsHtml = cardUsage
+      .map((card) => {
+        const isExceeded = Number(card.percent || 0) > 100;
+        return `<tr><td>${escapeHtml(card.name)}</td><td>${escapeHtml(formatCardType(card.card_type))}</td><td class="money">${money.format(card.card_limit)}</td><td class="money">${money.format(card.spent)}</td><td class="money">${money.format(card.available)}</td><td class="${isExceeded ? "negative" : ""}">${card.percent}%</td></tr>`;
+      })
+      .join("") || `<tr><td colspan="6" class="muted">Sem cartões cadastrados.</td></tr>`;
+
+    const automaticHtml = automaticTransactions
+      .map((item) => `<tr><td>${formatDateBR(item.date)}</td><td>${item.type === "income" ? "Receita" : "Despesa"}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.category)}</td><td>${escapeHtml(item.method || "-")}</td><td class="money">${money.format(item.amount)}</td></tr>`)
+      .join("") || `<tr><td colspan="6" class="muted">Sem lançamentos automáticos neste mês.</td></tr>`;
+
+    const alertItems = [
+      ...(summary.balance < 0 ? [`Saldo negativo no mês: ${money.format(summary.balance)}.`] : []),
+      ...financialNotifications.map((item) => `${item.title}: ${item.text}`),
+      ...(limitAlerts.length ? [`Limites ultrapassados: ${limitAlerts.map((item) => item.category).join(", ")}.`] : []),
+    ];
+
+    const alertsHtml = alertItems.length
+      ? alertItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
+      : `<li>Nenhum alerta crítico identificado no período.</li>`;
+
+    const transactionsHtml = visibleTransactions
+      .map((item) => {
+        const cardName = item.card_id ? cardNameById.get(item.card_id) || "-" : "-";
+        const origin = item.recurring_item_id || item.recurrence_month ? "Fixo automático" : item.installment_total ? "Parcelado" : "Manual";
+        return `<tr><td>${formatDateBR(item.date)}</td><td>${item.type === "income" ? "Receita" : "Despesa"}</td><td>${escapeHtml(item.description)}</td><td>${escapeHtml(item.category)}</td><td>${escapeHtml(item.method || "-")}</td><td>${escapeHtml(cardName)}</td><td>${origin}</td><td class="money">${money.format(item.amount)}</td></tr>`;
+      })
+      .join("") || `<tr><td colspan="8" class="muted">Nenhum lançamento encontrado para este filtro.</td></tr>`;
+
+    const conclusionText = summary.balance < 0
+      ? `O período exige atenção: revise principalmente as maiores categorias de despesa e os cartões próximos ou acima do limite.`
+      : `O período apresentou resultado positivo. Continue acompanhando os maiores gastos e mantenha metas atualizadas para preservar o controle financeiro.`;
 
     const html = `
       <html>
@@ -3319,28 +3747,45 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
           <style>
             * { box-sizing: border-box; }
             body { margin: 0; font-family: Arial, sans-serif; background: #eef3f7; color: #0f172a; padding: 28px; }
-            .page { max-width: 1100px; margin: 0 auto; background: #fff; border-radius: 24px; overflow: hidden; box-shadow: 0 18px 50px rgba(15,23,42,.10); }
+            .page { max-width: 1180px; margin: 0 auto; background: #fff; border-radius: 24px; overflow: hidden; box-shadow: 0 18px 50px rgba(15,23,42,.10); }
             .header { background: linear-gradient(135deg, #07111f, #10244d 58%, #064e3b); color: #fff; padding: 34px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
             .brand { display: flex; align-items: center; gap: 16px; }
             .logo { width: 58px; height: 58px; border-radius: 16px; object-fit: cover; border: 1px solid rgba(255,255,255,.2); }
             h1 { margin: 0; font-size: 28px; line-height: 1.2; }
             h2 { margin: 0 0 12px; font-size: 20px; }
+            h3 { margin: 0 0 8px; font-size: 16px; }
             .subtitle { color: #cbd5e1; margin: 6px 0 0; font-size: 13px; }
             .content { padding: 30px; }
             .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 24px; }
             .card { border: 1px solid #e2e8f0; border-radius: 18px; padding: 18px; background: #f8fafc; }
             .card span { display: block; color: #64748b; font-size: 12px; font-weight: 700; margin-bottom: 8px; }
             .card strong { font-size: 21px; }
-            .section { margin-top: 26px; }
+            .section { margin-top: 28px; page-break-inside: avoid; }
+            .section.breakable { page-break-inside: auto; }
+            .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+            .box { border: 1px solid #e2e8f0; background: #f8fafc; border-radius: 18px; padding: 18px; }
             .health { border: 1px solid #bbf7d0; background: #ecfdf5; border-radius: 18px; padding: 18px; margin: 22px 0; }
             .health strong { color: #047857; }
+            .alert { border: 1px solid #fecdd3; background: #fff1f2; border-radius: 18px; padding: 18px; }
+            .alert strong { color: #be123c; }
             .muted { color: #64748b; }
+            ul { margin: 10px 0 0; padding-left: 20px; }
+            li { margin: 6px 0; font-size: 13px; line-height: 1.45; }
             table { width: 100%; border-collapse: collapse; overflow: hidden; border-radius: 14px; }
-            th, td { border-bottom: 1px solid #e2e8f0; padding: 11px 10px; text-align: left; font-size: 12px; }
+            th, td { border-bottom: 1px solid #e2e8f0; padding: 11px 10px; text-align: left; font-size: 12px; vertical-align: middle; }
             th { background: #f1f5f9; color: #334155; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
-            .money { text-align: right; font-weight: 700; }
+            .money { text-align: right; font-weight: 700; white-space: nowrap; }
+            .positive { color: #047857; font-weight: 700; }
+            .negative { color: #be123c; font-weight: 700; }
+            .bar { width: 100%; height: 8px; background: #e2e8f0; border-radius: 999px; overflow: hidden; }
+            .bar span { display: block; height: 100%; background: #10b981; border-radius: 999px; }
             .footer { padding: 22px 30px 30px; color: #94a3b8; font-size: 12px; text-align: center; }
-            @media print { body { background: #fff; padding: 0; } .page { box-shadow: none; border-radius: 0; } .header { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+            @media print {
+              body { background: #fff; padding: 0; }
+              .page { box-shadow: none; border-radius: 0; }
+              .header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+              .card, .box, .health, .alert, th { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            }
           </style>
         </head>
         <body>
@@ -3349,43 +3794,82 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
               <div class="brand">
                 <img class="logo" src="${window.location.origin}/logo-email.png" />
                 <div>
-                  <h1>Controle Financeiro</h1>
-                  <p class="subtitle">Relatório de ${monthLabel(selectedMonth)} · ${userName}</p>
+                  <h1>Relatório Financeiro</h1>
+                  <p class="subtitle">${monthLabel(selectedMonth)} · ${escapeHtml(userName)}</p>
                 </div>
               </div>
               <div style="text-align:right">
-                <strong>${new Date().toLocaleDateString("pt-BR")}</strong>
-                <p class="subtitle">${user.email}</p>
+                <strong>Gerado em ${generatedAt.toLocaleDateString("pt-BR")} às ${generatedAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</strong>
+                <p class="subtitle">${escapeHtml(user.email)}</p>
               </div>
             </div>
+
             <div class="content">
               <div class="cards">
                 <div class="card"><span>Receitas</span><strong>${money.format(summary.income)}</strong></div>
                 <div class="card"><span>Despesas</span><strong>${money.format(summary.expense)}</strong></div>
                 <div class="card"><span>Saldo</span><strong>${money.format(summary.balance)}</strong></div>
-                <div class="card"><span>Economia</span><strong>${incomePercent}%</strong></div>
+                <div class="card"><span>Economia</span><strong>${economyPercent}%</strong></div>
               </div>
-              <div class="health"><strong>Saúde financeira: ${health.label}</strong><br/><span>${health.text}</span></div>
+
+              <div class="health"><strong>Saúde financeira: ${health.label}</strong><br/><span>${escapeHtml(health.text)}</span></div>
+
+              <div class="grid-2 section">
+                <div class="box">
+                  <h2>Resumo executivo</h2>
+                  <p>${escapeHtml(executiveText)}</p>
+                  <p class="muted">Lançamentos no filtro atual: ${visibleTransactions.length} · Manuais: ${manualTransactions.length} · Automáticos: ${automaticTransactions.length}</p>
+                </div>
+                <div class="alert">
+                  <strong>Alertas importantes</strong>
+                  <ul>${alertsHtml}</ul>
+                </div>
+              </div>
+
               <div class="section">
-                <h2>Lançamentos do mês</h2>
+                <h2>Comparativo com ${previousMonthLabel}</h2>
                 <table>
-                  <thead><tr><th>Data</th><th>Tipo</th><th>Descrição</th><th>Categoria</th><th class="money">Valor</th></tr></thead>
-                  <tbody>
-                    ${visibleTransactions
-                      .map(
-                        (item) => `<tr><td>${formatDateBR(item.date)}</td><td>${item.type === "income" ? "Receita" : "Despesa"}</td><td>${item.description}</td><td>${item.category}</td><td class="money">${money.format(item.amount)}</td></tr>`
-                      )
-                      .join("") || `<tr><td colspan="5" class="muted">Nenhum lançamento encontrado para este filtro.</td></tr>`}
-                  </tbody>
+                  <thead><tr><th>Indicador</th><th class="money">Atual</th><th class="money">Anterior</th><th class="money">Diferença</th></tr></thead>
+                  <tbody>${comparisonHtml}</tbody>
                 </table>
               </div>
+
+              <div class="section">
+                <h2>Gastos por categoria</h2>
+                <table><thead><tr><th>Categoria</th><th>Participação</th><th>%</th><th class="money">Valor</th></tr></thead><tbody>${categoryHtml}</tbody></table>
+              </div>
+
+              <div class="section">
+                <h2>Resumo dos cartões</h2>
+                <table><thead><tr><th>Cartão</th><th>Tipo</th><th class="money">Limite</th><th class="money">Usado</th><th class="money">Disponível</th><th>Uso</th></tr></thead><tbody>${cardsHtml}</tbody></table>
+              </div>
+
+              <div class="section">
+                <h2>Lançamentos automáticos do mês</h2>
+                <table><thead><tr><th>Data</th><th>Tipo</th><th>Descrição</th><th>Categoria</th><th>Forma</th><th class="money">Valor</th></tr></thead><tbody>${automaticHtml}</tbody></table>
+              </div>
+
               <div class="section">
                 <h2>Top gastos</h2>
-                <table><thead><tr><th>Descrição</th><th>Categoria</th><th class="money">Valor</th></tr></thead><tbody>${topExpensesHtml}</tbody></table>
+                <table><thead><tr><th>Descrição</th><th>Categoria</th><th>Forma</th><th class="money">Valor</th></tr></thead><tbody>${topExpensesHtml}</tbody></table>
               </div>
+
               <div class="section">
                 <h2>Metas financeiras</h2>
-                <table><thead><tr><th>Meta</th><th>Progresso</th><th class="money">Valor</th></tr></thead><tbody>${goalsHtml}</tbody></table>
+                <table><thead><tr><th>Meta</th><th>Progresso</th><th>%</th><th class="money">Valor</th></tr></thead><tbody>${goalsHtml}</tbody></table>
+              </div>
+
+              <div class="section breakable">
+                <h2>Lista completa de lançamentos</h2>
+                <table>
+                  <thead><tr><th>Data</th><th>Tipo</th><th>Descrição</th><th>Categoria</th><th>Forma</th><th>Cartão</th><th>Origem</th><th class="money">Valor</th></tr></thead>
+                  <tbody>${transactionsHtml}</tbody>
+                </table>
+              </div>
+
+              <div class="section box">
+                <h2>Conclusão</h2>
+                <p>${escapeHtml(conclusionText)}</p>
               </div>
             </div>
             <div class="footer">Relatório gerado automaticamente pelo Controle Financeiro.</div>
@@ -3404,9 +3888,8 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     reportWindow.document.close();
     reportWindow.focus();
     window.setTimeout(() => reportWindow.print(), 500);
-    showToast("Relatório profissional aberto para impressão.", "success");
+    showToast("Relatório financeiro completo aberto para impressão.", "success");
   }
-
 
   const tabs = [
     { key: "dashboard", label: "Painel", icon: <BarChart3 size={17} /> },
@@ -3614,6 +4097,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
           onDuplicate={handleDuplicateTransaction}
           onView={setSelectedTransaction}
           exportCSV={exportCSV}
+          exportExcel={exportExcel}
           creditCards={creditCards}
         />
       )}
@@ -3642,7 +4126,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
 
       {page === "annual" && <AnnualDashboardPage selectedYear={selectedYear} setSelectedYear={setSelectedYear} years={availableYears} data={annualMonthlyData} summary={annualSummary} onMonthClick={openMonthlyDashboard} />}
 
-      {page === "reports" && <ReportsPage summary={summary} selectedMonth={selectedMonth} visibleTransactions={visibleTransactions} topExpenses={topExpenses} goals={goals} exportCSV={exportCSV} exportPDF={exportPDF} exportBackup={exportBackup} onOpenTransactions={openTransactionsWithFilters} setPage={setPage} />}
+      {page === "reports" && <ReportsPage summary={summary} selectedMonth={selectedMonth} visibleTransactions={visibleTransactions} topExpenses={topExpenses} goals={goals} exportCSV={exportCSV} exportExcel={exportExcel} exportPDF={exportPDF} exportBackup={exportBackup} onOpenTransactions={openTransactionsWithFilters} setPage={setPage} />}
 
       {page === "profile" && <ProfilePage user={user} profileName={profileName} setProfileName={setProfileName} onSubmit={updateProfile} />}
 
@@ -4124,7 +4608,7 @@ function MultiFilterSelect({ label, values, onChange, options, allValue, allLabe
   );
 }
 
-function TransactionsPage({ form, setForm, resetForm, onSubmit, visibleTransactions, allCategories, query, setQuery, dateFilter, setDateFilter, categoryFilter, setCategoryFilter, typeFilter, setTypeFilter, cardFilter, setCardFilter, sortBy, setSortBy, onEdit, onDelete, onDuplicate, onView, exportCSV, creditCards }) {
+function TransactionsPage({ form, setForm, resetForm, onSubmit, visibleTransactions, allCategories, query, setQuery, dateFilter, setDateFilter, categoryFilter, setCategoryFilter, typeFilter, setTypeFilter, cardFilter, setCardFilter, sortBy, setSortBy, onEdit, onDelete, onDuplicate, onView, exportCSV, exportExcel, creditCards }) {
   const [showAutomaticTransactions, setShowAutomaticTransactions] = useState(false);
   const [selectedTransactionIds, setSelectedTransactionIds] = useState([]);
   const manualTransactions = visibleTransactions.filter((item) => !item.recurring_item_id && !item.recurrence_month);
@@ -4167,9 +4651,14 @@ function TransactionsPage({ form, setForm, resetForm, onSubmit, visibleTransacti
             <h2 className="text-xl font-black">Lançamentos</h2>
             <p className="muted-text text-sm">Filtre, ordene, edite ou exclua registros.</p>
           </div>
-          <button onClick={exportCSV} className="outline-button inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-2 text-sm font-black transition">
-            <Download size={17} /> Exportar CSV
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={exportExcel} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-black text-white transition hover:bg-emerald-700">
+              <Download size={17} /> Exportar Excel
+            </button>
+            <button onClick={exportCSV} className="outline-button inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-2 text-sm font-black transition">
+              CSV
+            </button>
+          </div>
         </div>
 
         <div className="mb-4 grid gap-3 lg:grid-cols-[1fr_160px_160px_170px_170px]">
@@ -5521,7 +6010,7 @@ function SettingsPage({ preferencesForm, setPreferencesForm, onSubmit, exportBac
   );
 }
 
-function ReportsPage({ summary, selectedMonth, visibleTransactions, topExpenses, goals, exportCSV, exportPDF, exportBackup, onOpenTransactions, setPage }) {
+function ReportsPage({ summary, selectedMonth, visibleTransactions, topExpenses, goals, exportCSV, exportExcel, exportPDF, exportBackup, onOpenTransactions, setPage }) {
   return (
     <main className="grid gap-6">
       <section className="surface-card rounded-[2rem] p-6 shadow-sm">
@@ -5535,8 +6024,9 @@ function ReportsPage({ summary, selectedMonth, visibleTransactions, topExpenses,
           </div>
         </div>
         <div className="mt-6 flex flex-wrap gap-3">
-          <button onClick={exportCSV} className="rounded-2xl bg-emerald-600 px-5 py-3 font-black text-white"><Download className="mr-2 inline" size={18} /> Exportar CSV</button>
+          <button onClick={exportExcel} className="rounded-2xl bg-emerald-600 px-5 py-3 font-black text-white"><Download className="mr-2 inline" size={18} /> Exportar Excel</button>
           <button onClick={exportPDF} className="outline-button rounded-2xl px-5 py-3 font-black"><FileText className="mr-2 inline" size={18} /> Gerar PDF</button>
+          <button onClick={exportCSV} className="outline-button rounded-2xl px-5 py-3 font-black">CSV</button>
         </div>
       </section>
 
@@ -6137,6 +6627,31 @@ function GlobalStyles() {
       button, select, input[type="button"], input[type="submit"], .carousel-button, .carousel-dot { cursor: pointer; }
       button:disabled, input:disabled, select:disabled { cursor: not-allowed; }
       input::placeholder { color: var(--muted); }
+
+      .input:-webkit-autofill,
+      .input:-webkit-autofill:hover,
+      .input:-webkit-autofill:focus,
+      input:-webkit-autofill,
+      input:-webkit-autofill:hover,
+      input:-webkit-autofill:focus {
+        -webkit-text-fill-color: var(--text) !important;
+        caret-color: var(--text) !important;
+        -webkit-box-shadow: 0 0 0 1000px var(--surface-2) inset !important;
+        box-shadow: 0 0 0 1000px var(--surface-2) inset !important;
+        border-color: rgb(16 185 129) !important;
+        transition: background-color 9999s ease-in-out 0s;
+      }
+      .theme-light .input:-webkit-autofill,
+      .theme-light .input:-webkit-autofill:hover,
+      .theme-light .input:-webkit-autofill:focus,
+      .theme-light input:-webkit-autofill,
+      .theme-light input:-webkit-autofill:hover,
+      .theme-light input:-webkit-autofill:focus {
+        -webkit-text-fill-color: #0f172a !important;
+        caret-color: #0f172a !important;
+        -webkit-box-shadow: 0 0 0 1000px #ffffff inset !important;
+        box-shadow: 0 0 0 1000px #ffffff inset !important;
+      }
       select option { background: var(--surface); color: var(--text); }
 
 
