@@ -96,6 +96,14 @@ const paymentMethods = [
 
 const cardTypes = ["Crédito", "Débito", "Crédito e Débito", "Alimentação", "Refeição", "Benefício", "Vale transporte", "Pré-pago", "Outro"];
 
+const recurrenceTypes = [
+  { value: "monthly", label: "Mensal", helper: "Todo mês no dia escolhido" },
+  { value: "weekly", label: "Semanal", helper: "Toda semana a partir da data inicial" },
+  { value: "biweekly", label: "Quinzenal", helper: "A cada 14 dias a partir da data inicial" },
+  { value: "annual", label: "Anual", helper: "Uma vez por ano na data inicial" },
+  { value: "custom_months", label: "A cada X meses", helper: "Repete no intervalo de meses definido" },
+];
+
 const monthOptions = [
   { value: "01", label: "janeiro" },
   { value: "02", label: "fevereiro" },
@@ -183,6 +191,27 @@ function formatDateBR(isoDate) {
   return `${day}/${month}/${year}`;
 }
 
+function dateToISODate(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function parseISODateSafe(value) {
+  if (!value || typeof value !== "string" || !value.includes("-")) return null;
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return null;
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() + 1 !== month || date.getDate() !== day) return null;
+  return date;
+}
+
+function todayISODate() {
+  return dateToISODate(new Date());
+}
+
 function normalizeOptionalCardDay(value) {
   const number = Number(value || 0);
   if (!Number.isFinite(number) || number <= 0) return 0;
@@ -248,8 +277,91 @@ function cardMatchesPaymentMethod(card, method) {
 
 function getCardOptionsForPaymentMethod(cards, method) {
   const activeCards = cards.filter((card) => card.is_active);
-  const matchingCards = activeCards.filter((card) => cardMatchesPaymentMethod(card, method));
-  return matchingCards.length ? matchingCards : activeCards;
+
+  if (!isCardBasedPaymentMethod(method)) return activeCards;
+
+  return activeCards.filter((card) => cardMatchesPaymentMethod(card, method));
+}
+
+function normalizeTextForSearch(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const expenseCategorySuggestionRules = [
+  {
+    category: "Alimentação",
+    terms: [
+      "mc donalds",
+      "mcdonalds",
+      "mc donald",
+      "burger king",
+      "bk",
+      "ifood",
+      "restaurante",
+      "lanche",
+      "pizza",
+      "hamburguer",
+      "padaria",
+      "cafeteria",
+      "starbucks",
+      "subway",
+      "delivery",
+      "almoço",
+      "almoco",
+      "jantar",
+    ],
+  },
+  {
+    category: "Mercado",
+    terms: ["mercado", "supermercado", "atacadao", "atacadão", "assai", "assaí", "carrefour", "extra", "pao de acucar", "pão de açúcar", "hortifruti", "feira"],
+  },
+  {
+    category: "Transporte",
+    terms: ["uber", "99", "taxi", "táxi", "combustivel", "combustível", "gasolina", "etanol", "posto", "metro", "metrô", "onibus", "ônibus", "estacionamento", "pedagio", "pedágio"],
+  },
+  {
+    category: "Saúde",
+    terms: ["farmacia", "farmácia", "drogaria", "drogasil", "droga raia", "raia", "consulta", "exame", "medico", "médico", "dentista", "remedio", "remédio"],
+  },
+  {
+    category: "Lazer",
+    terms: ["cinema", "show", "netflix", "spotify", "prime video", "disney", "hbo", "ingresso", "bar", "viagem", "passeio"],
+  },
+  {
+    category: "Moradia",
+    terms: ["aluguel", "condominio", "condomínio", "luz", "energia", "agua", "água", "internet", "vivo", "claro", "tim", "iptu", "manutencao", "manutenção"],
+  },
+  {
+    category: "Educação",
+    terms: ["faculdade", "curso", "udemy", "alura", "livro", "material", "escola", "mensalidade"],
+  },
+  {
+    category: "Assinaturas",
+    terms: ["assinatura", "icloud", "google one", "microsoft", "canva", "adobe", "app store", "play store"],
+  },
+  {
+    category: "Dívidas",
+    terms: ["emprestimo", "empréstimo", "financiamento", "parcela", "boleto", "acordo", "divida", "dívida"],
+  },
+];
+
+function suggestCategoryFromDescription(description, type = "expense") {
+  if (type !== "expense") return "";
+
+  const normalized = normalizeTextForSearch(description);
+  if (!normalized) return "";
+
+  const rule = expenseCategorySuggestionRules.find((item) =>
+    item.terms.some((term) => normalized.includes(normalizeTextForSearch(term)))
+  );
+
+  return rule?.category || "";
 }
 
 function maskDateBR(value) {
@@ -316,10 +428,114 @@ function normalizeLimit(row) {
 }
 
 function normalizeRecurring(row) {
+  const recurrenceType = row?.recurrence_type || "monthly";
+  const intervalMonths = Math.max(1, Number(row?.interval_months || 1));
+
   return {
     ...row,
     amount: Number(row.amount || 0),
-    day_of_month: Number(row.day_of_month || 1),
+    day_of_month: Math.min(31, Math.max(1, Number(row.day_of_month || 1))),
+    recurrence_type: recurrenceType,
+    interval_months: intervalMonths,
+    start_date: row?.start_date || "",
+  };
+}
+
+function getRecurrenceTypeLabel(type) {
+  return recurrenceTypes.find((item) => item.value === type)?.label || "Mensal";
+}
+
+function getRecurringFrequencyLabel(item) {
+  const type = item?.recurrence_type || "monthly";
+  if (type === "weekly") return "Semanal";
+  if (type === "biweekly") return "Quinzenal";
+  if (type === "annual") return "Anual";
+  if (type === "custom_months") {
+    const interval = Math.max(1, Number(item?.interval_months || 1));
+    return interval === 1 ? "Mensal" : `A cada ${interval} meses`;
+  }
+  return "Mensal";
+}
+
+function getRecurringScheduleText(item) {
+  const type = item?.recurrence_type || "monthly";
+  const day = Math.min(31, Math.max(1, Number(item?.day_of_month || 1)));
+  const startDate = item?.start_date ? formatDateBR(item.start_date) : "sem data inicial";
+
+  if (type === "weekly") return `Semanal · desde ${startDate}`;
+  if (type === "biweekly") return `Quinzenal · desde ${startDate}`;
+  if (type === "annual") return `Anual · ${startDate}`;
+  if (type === "custom_months") return `${getRecurringFrequencyLabel(item)} · dia ${day}`;
+  return `Mensal · dia ${day}`;
+}
+
+function getRecurringOccurrenceDates(item, monthValue) {
+  if (!item || !monthValue) return [];
+
+  const [year, month] = String(monthValue).split("-").map(Number);
+  if (!year || !month) return [];
+
+  const type = item.recurrence_type || "monthly";
+  const startOfMonth = new Date(year, month - 1, 1);
+  const endOfMonth = new Date(year, month, 0);
+  const lastDay = endOfMonth.getDate();
+  const day = Math.min(Number(item.day_of_month || 1), lastDay);
+  const fallbackStartDate = new Date(year, month - 1, day);
+  const startDate = parseISODateSafe(item.start_date) || fallbackStartDate;
+
+  if (type === "weekly" || type === "biweekly") {
+    const stepDays = type === "weekly" ? 7 : 14;
+    let current = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+
+    if (current < startOfMonth) {
+      const diffDays = Math.floor((startOfMonth - current) / (1000 * 60 * 60 * 24));
+      const stepsToMonth = Math.ceil(diffDays / stepDays);
+      current.setDate(current.getDate() + stepsToMonth * stepDays);
+    }
+
+    const dates = [];
+    while (current <= endOfMonth) {
+      if (current >= startOfMonth) dates.push(dateToISODate(current));
+      current.setDate(current.getDate() + stepDays);
+    }
+
+    return dates;
+  }
+
+  if (type === "annual") {
+    const referenceMonth = startDate.getMonth() + 1;
+    if (month !== referenceMonth) return [];
+    const referenceDay = Math.min(Number(item.day_of_month || startDate.getDate() || 1), lastDay);
+    const candidate = new Date(year, month - 1, referenceDay);
+    if (candidate < startDate) return [];
+    return [dateToISODate(candidate)];
+  }
+
+  if (type === "custom_months") {
+    const interval = Math.max(1, Number(item.interval_months || 1));
+    const monthsDiff = (year - startDate.getFullYear()) * 12 + (month - (startDate.getMonth() + 1));
+    if (monthsDiff < 0 || monthsDiff % interval !== 0) return [];
+    const candidate = new Date(year, month - 1, day);
+    if (candidate < startDate) return [];
+    return [dateToISODate(candidate)];
+  }
+
+  const candidate = new Date(year, month - 1, day);
+  if (item.start_date && candidate < startDate) return [];
+  return [dateToISODate(candidate)];
+}
+
+function normalizeRecurringFormPayload(form, monthValue = getCurrentMonth()) {
+  const recurrenceType = form?.recurrence_type || "monthly";
+  const day = Math.min(31, Math.max(1, Number(form?.day_of_month || 1)));
+  const startDate = form?.start_date || `${monthValue}-${String(day).padStart(2, "0")}`;
+  const intervalMonths = recurrenceType === "custom_months" ? Math.max(1, Number(form?.interval_months || 1)) : 1;
+
+  return {
+    recurrence_type: recurrenceType,
+    interval_months: intervalMonths,
+    start_date: startDate,
+    day_of_month: day,
   };
 }
 
@@ -339,6 +555,15 @@ function normalizeCardAdjustment(row) {
     amount: Number(row.amount || 0),
     adjustment_type: row.adjustment_type || "payment",
     date: row.date || new Date().toISOString().slice(0, 10),
+  };
+}
+
+function normalizePaymentAllocation(row) {
+  return {
+    ...row,
+    amount: Number(row.amount || 0),
+    target_amount: Number(row.target_amount || 0),
+    payment_date: row.payment_date || new Date().toISOString().slice(0, 10),
   };
 }
 
@@ -421,6 +646,103 @@ function previousMonthValue(monthValue) {
   const [year, month] = monthValue.split("-").map(Number);
   const date = new Date(year, month - 2, 1);
   return date.toISOString().slice(0, 7);
+}
+
+function clampInstallments(value) {
+  const number = Number(value || 1);
+  if (!Number.isFinite(number)) return 1;
+  return Math.min(60, Math.max(1, Math.floor(number)));
+}
+
+function getCleanInstallmentDescription(description) {
+  return String(description || "").replace(/\s*\(\d+\/\d+\)\s*$/g, "").trim();
+}
+
+function buildInstallmentRows({ userId, description, category, amount, firstDate, cardId, installments, notes }) {
+  const totalInstallments = clampInstallments(installments);
+  const totalAmount = Number(amount || 0);
+  const baseAmount = Number((totalAmount / totalInstallments).toFixed(2));
+  const groupId = uid();
+
+  return Array.from({ length: totalInstallments }).map((_, index) => {
+    const installmentNumber = index + 1;
+    const isLast = installmentNumber === totalInstallments;
+    const adjustedAmount = isLast ? Number((totalAmount - baseAmount * (totalInstallments - 1)).toFixed(2)) : baseAmount;
+
+    return {
+      user_id: userId,
+      type: "expense",
+      description: `${description} (${installmentNumber}/${totalInstallments})`,
+      category,
+      method: "Crédito",
+      amount: adjustedAmount,
+      date: addMonthsToISO(firstDate, index),
+      card_id: cardId,
+      notes: notes || null,
+      installment_group_id: groupId,
+      installment_number: installmentNumber,
+      installment_total: totalInstallments,
+    };
+  });
+}
+
+function buildInstallmentGroups(transactions, selectedMonth) {
+  const monthEnd = getMonthEndISO(selectedMonth);
+  const groups = new Map();
+
+  transactions
+    .filter((item) => item.installment_group_id && Number(item.installment_total || 0) > 1)
+    .forEach((item) => {
+      const groupId = item.installment_group_id;
+      const current = groups.get(groupId) || {
+        id: groupId,
+        description: getCleanInstallmentDescription(item.description),
+        category: item.category,
+        method: item.method,
+        card_id: item.card_id,
+        notes: item.notes || "",
+        items: [],
+      };
+
+      current.items.push(item);
+      groups.set(groupId, current);
+    });
+
+  return Array.from(groups.values())
+    .map((group) => {
+      const items = [...group.items].sort((a, b) => Number(a.installment_number || 0) - Number(b.installment_number || 0));
+      const totalInstallments = Math.max(...items.map((item) => Number(item.installment_total || items.length || 1)));
+      const totalAmount = items.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+      const amountUntilMonth = items.filter((item) => item.date <= monthEnd).reduce((sum, item) => sum + Number(item.amount || 0), 0);
+      const currentMonthItem = items.find((item) => item.date?.slice(0, 7) === selectedMonth);
+      const currentInstallment = currentMonthItem
+        ? Number(currentMonthItem.installment_number || 0)
+        : Math.max(0, ...items.filter((item) => item.date <= monthEnd).map((item) => Number(item.installment_number || 0)));
+      const nextItem = items.find((item) => item.date > monthEnd);
+      const firstDate = items[0]?.date || "";
+      const lastDate = items[items.length - 1]?.date || "";
+      const remainingInstallments = Math.max(0, totalInstallments - currentInstallment);
+      const remainingAmount = Math.max(0, Number((totalAmount - amountUntilMonth).toFixed(2)));
+      const progress = totalInstallments > 0 ? Math.min(100, Math.round((currentInstallment / totalInstallments) * 100)) : 0;
+
+      return {
+        ...group,
+        items,
+        totalInstallments,
+        currentInstallment,
+        remainingInstallments,
+        totalAmount,
+        amountUntilMonth,
+        remainingAmount,
+        installmentAmount: items[0]?.amount || 0,
+        firstDate,
+        lastDate,
+        nextDate: nextItem?.date || "",
+        progress,
+        status: currentInstallment >= totalInstallments ? "Concluído" : currentInstallment === 0 ? "Futuro" : "Em andamento",
+      };
+    })
+    .sort((a, b) => (b.firstDate || "").localeCompare(a.firstDate || ""));
 }
 
 function readFileText(file) {
@@ -1464,7 +1786,7 @@ function DemoDashboard({ darkMode, setDarkMode, onBack, onCreateAccount }) {
   ];
 
   return (
-    <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-5 pb-28 sm:px-6 lg:px-8 lg:pb-8">
+    <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-6 px-4 py-5 pb-28 sm:px-6 lg:px-8 lg:pb-8">
       <ToastCustom toast={toast} onClose={() => setToast((current) => ({ ...current, open: false }))} />
 
       <header className="dashboard-header surface-card rounded-[2rem] p-4 shadow-sm">
@@ -1745,8 +2067,8 @@ function DemoCardsPage({ cards, transactions, selectedCardId, setSelectedCardId,
   const selectedTransactions = transactions.filter((item) => item.card_id === selectedCard?.id && item.type === "expense");
 
   return (
-    <main className="grid gap-6 lg:grid-cols-[380px_1fr]">
-      <section className="surface-card rounded-[2rem] p-5 shadow-sm">
+    <main className="transactions-layout grid gap-6 lg:grid-cols-[380px_1fr]">
+      <section id="new-transaction-form-card" className="surface-card compact-entry-card rounded-[2rem] p-5 shadow-sm">
         <h2 className="text-2xl font-black">Fatura interativa</h2>
         <p className="muted-text mt-2 text-sm leading-7">Escolha um cartão e simule compras ou pagamento da fatura.</p>
 
@@ -2198,6 +2520,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
   const [recurringItems, setRecurringItems] = useState([]);
   const [creditCards, setCreditCards] = useState([]);
   const [cardAdjustments, setCardAdjustments] = useState([]);
+  const [paymentAllocations, setPaymentAllocations] = useState([]);
   const [preferences, setPreferences] = useState(null);
 
   const [query, setQuery] = useState("");
@@ -2228,6 +2551,9 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     category: "Mercado",
     method: "Pix",
     amount: "",
+    recurrence_type: "monthly",
+    interval_months: "2",
+    start_date: todayISODate(),
     day_of_month: "5",
     is_active: true,
   };
@@ -2248,6 +2574,9 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
   const [editingCardId, setEditingCardId] = useState(null);
   const [editCardForm, setEditCardForm] = useState(emptyCardForm);
   const [selectedTransaction, setSelectedTransaction] = useState(null);
+  const [mobileQuickActionsOpen, setMobileQuickActionsOpen] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [preferencesForm, setPreferencesForm] = useState({ monthly_income: "", main_goal: "", currency: "BRL", default_theme: "system" });
 
   useEffect(() => {
@@ -2355,17 +2684,18 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     hideToast();
 
     try {
-      const [transactionsResult, goalsResult, limitsResult, recurringResult, cardsResult, cardAdjustmentsResult, preferencesResult] = await Promise.all([
+      const [transactionsResult, goalsResult, limitsResult, recurringResult, cardsResult, cardAdjustmentsResult, paymentAllocationsResult, preferencesResult] = await Promise.all([
         supabase.from("transactions").select("*").eq("user_id", user.id).order("date", { ascending: false }),
         supabase.from("goals").select("*").eq("user_id", user.id).order("created_at", { ascending: false }),
         supabase.from("category_limits").select("*").eq("user_id", user.id).order("category", { ascending: true }),
         supabase.from("recurring_items").select("*").eq("user_id", user.id).order("created_at", { ascending: false }),
         supabase.from("credit_cards").select("*").eq("user_id", user.id).order("created_at", { ascending: false }),
         supabase.from("card_adjustments").select("*").eq("user_id", user.id).order("date", { ascending: false }),
+        supabase.from("payment_allocations").select("*").eq("user_id", user.id).order("payment_date", { ascending: false }),
         supabase.from("user_preferences").select("*").eq("user_id", user.id).limit(1),
       ]);
 
-      const error = transactionsResult.error || goalsResult.error || limitsResult.error || recurringResult.error || cardsResult.error || cardAdjustmentsResult.error || preferencesResult.error;
+      const error = transactionsResult.error || goalsResult.error || limitsResult.error || recurringResult.error || cardsResult.error || cardAdjustmentsResult.error || paymentAllocationsResult.error || preferencesResult.error;
       if (error) throw error;
 
       setTransactions((transactionsResult.data || []).map(normalizeTransaction));
@@ -2374,6 +2704,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
       setRecurringItems((recurringResult.data || []).map(normalizeRecurring));
       setCreditCards((cardsResult.data || []).map(normalizeCard));
       setCardAdjustments((cardAdjustmentsResult.data || []).map(normalizeCardAdjustment));
+      setPaymentAllocations((paymentAllocationsResult.data || []).map(normalizePaymentAllocation));
 
       let preferenceRow = (preferencesResult.data || [])[0];
       if (!preferenceRow) {
@@ -2432,6 +2763,14 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
       return new Date(b.date) - new Date(a.date);
     });
   }, [monthTransactions, categoryFilter, typeFilter, cardFilter, dateFilter, query, sortBy]);
+
+  const visibleRegularTransactions = useMemo(() => {
+    return visibleTransactions.filter((item) => !item.card_id);
+  }, [visibleTransactions]);
+
+  const visibleCardTransactions = useMemo(() => {
+    return visibleTransactions.filter((item) => item.card_id);
+  }, [visibleTransactions]);
 
   const summary = useMemo(() => {
     const income = monthTransactions.filter((item) => item.type === "income").reduce((total, item) => total + Number(item.amount), 0);
@@ -2598,21 +2937,245 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
 
   const financialNotifications = useMemo(() => {
     const notifications = [];
-    limitAlerts.forEach((item) => notifications.push({ title: `Limite ultrapassado: ${item.category}`, text: `Gasto de ${money.format(item.spent)} para limite de ${money.format(item.monthly_limit)}.`, tone: "amber" }));
-    cardUsage.filter((card) => card.card_limit > 0 && card.percent >= 80).forEach((card) => notifications.push({ title: `Atenção ao cartão ${card.name}`, text: `${card.percent}% do limite utilizado neste mês.`, tone: "rose" }));
+    const seen = new Set();
+    const [year, month] = String(selectedMonth || getCurrentMonth()).split("-").map(Number);
+    const currentMonth = getCurrentMonth();
     const today = new Date();
-    recurringItems.filter((item) => item.is_active).forEach((item) => {
-      const dueDate = new Date(today.getFullYear(), today.getMonth(), Number(item.day_of_month));
-      const diffDays = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
-      if (diffDays >= 0 && diffDays <= 5) notifications.push({ title: `Item fixo próximo: ${item.description}`, text: `Vence/entra no dia ${item.day_of_month}.`, tone: "blue" });
+    const todayClean = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const monthStart = new Date(year, month - 1, 1);
+    const monthEnd = new Date(year, month, 0);
+    const referenceDate = selectedMonth === currentMonth ? todayClean : monthStart;
+    const incomeBase = Number(summary.income || preferences?.monthly_income || 0);
+
+    function addNotification({ title, text, tone = "blue", priority = 5, badge = "Aviso", action = "" }) {
+      const key = `${title}-${text}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      notifications.push({ title, text, tone, priority, badge, action });
+    }
+
+    if (summary.balance < 0) {
+      addNotification({
+        title: "Saldo negativo no mês",
+        text: `Suas despesas passaram das receitas em ${money.format(Math.abs(summary.balance))}.`,
+        tone: "rose",
+        priority: 1,
+        badge: "Crítico",
+        action: "Revise os maiores gastos e veja a aba Pagamentos.",
+      });
+    }
+
+    if (incomeBase > 0 && summary.expense / incomeBase >= 0.9) {
+      addNotification({
+        title: "Orçamento quase no limite",
+        text: `Você já comprometeu ${Math.round((summary.expense / incomeBase) * 100)}% da sua renda/base mensal.`,
+        tone: summary.expense > incomeBase ? "rose" : "amber",
+        priority: summary.expense > incomeBase ? 1 : 2,
+        badge: summary.expense > incomeBase ? "Crítico" : "Atenção",
+        action: "Evite novas despesas variáveis até fechar o mês.",
+      });
+    }
+
+    if (summary.expense > previousSummary.expense && previousSummary.expense > 0) {
+      const diff = summary.expense - previousSummary.expense;
+      const percent = Math.round((diff / previousSummary.expense) * 100);
+      if (percent >= 25 && diff >= 100) {
+        addNotification({
+          title: "Gastos subiram rápido",
+          text: `As despesas estão ${percent}% acima do mês anterior, uma diferença de ${money.format(diff)}.`,
+          tone: "amber",
+          priority: 3,
+          badge: "Tendência",
+          action: "Compare categorias no relatório mensal.",
+        });
+      }
+    }
+
+    categoryUsage
+      .filter((item) => item.monthly_limit > 0 && item.percent >= 80)
+      .forEach((item) => {
+        const exceeded = item.spent > item.monthly_limit;
+        addNotification({
+          title: exceeded ? `Limite ultrapassado: ${item.category}` : `Limite próximo: ${item.category}`,
+          text: exceeded
+            ? `Você gastou ${money.format(item.spent)} em um limite de ${money.format(item.monthly_limit)}.`
+            : `Você já usou ${item.percent}% do limite de ${money.format(item.monthly_limit)}.`,
+          tone: exceeded ? "rose" : "amber",
+          priority: exceeded ? 1 : 3,
+          badge: exceeded ? "Crítico" : "Atenção",
+          action: exceeded ? "Considere pausar gastos nessa categoria." : "Acompanhe antes de passar do limite.",
+        });
+      });
+
+    const previousCategoryMap = new Map();
+    previousMonthTransactions
+      .filter((item) => item.type === "expense")
+      .forEach((item) => previousCategoryMap.set(item.category, (previousCategoryMap.get(item.category) || 0) + Number(item.amount || 0)));
+
+    expenseByCategory.forEach((item) => {
+      const previousValue = previousCategoryMap.get(item.name) || 0;
+      const diff = Number(item.value || 0) - previousValue;
+      if (previousValue > 0 && diff >= 100 && diff / previousValue >= 0.5) {
+        addNotification({
+          title: `Alta incomum em ${item.name}`,
+          text: `Essa categoria aumentou ${money.format(diff)} em relação ao mês anterior.`,
+          tone: "amber",
+          priority: 4,
+          badge: "Comparativo",
+          action: "Abra os lançamentos filtrando essa categoria.",
+        });
+      }
     });
-    return notifications.slice(0, 6);
-  }, [limitAlerts, cardUsage, recurringItems]);
+
+    cardUsage.forEach((card) => {
+      if (!card.is_active) return;
+      const base = Number(card.total_available_base || card.card_limit || 0);
+      const used = Number(card.spent || 0);
+      if (base > 0 && card.percent >= 75) {
+        const isCritical = card.percent >= 90;
+        addNotification({
+          title: `${isCritical ? "Limite crítico" : "Uso alto"}: ${card.name}`,
+          text: `${card.percent}% ${card.stored_value_card ? "do saldo" : "do limite"} já está comprometido. Em aberto: ${money.format(used)}.`,
+          tone: isCritical ? "rose" : "amber",
+          priority: isCritical ? 1 : 3,
+          badge: card.stored_value_card ? "Saldo" : "Cartão",
+          action: card.stored_value_card ? "Avalie uma recarga ou reduza novos gastos." : "Evite novas compras no cartão até reduzir a fatura.",
+        });
+      }
+
+      if (!card.stored_value_card && used > 0 && Number(card.due_day || 0) > 0) {
+        const dueDate = new Date(year, month - 1, Number(card.due_day));
+        const diffDays = Math.ceil((dueDate - referenceDate) / (1000 * 60 * 60 * 24));
+
+        if (selectedMonth === currentMonth && diffDays < 0) {
+          addNotification({
+            title: `Fatura possivelmente vencida: ${card.name}`,
+            text: `Há ${money.format(used)} em aberto e o vencimento foi dia ${card.due_day}.`,
+            tone: "rose",
+            priority: 1,
+            badge: "Vencido",
+            action: "Registre o pagamento na aba Pagamentos.",
+          });
+        } else if (diffDays >= 0 && diffDays <= 5) {
+          addNotification({
+            title: `Fatura próxima: ${card.name}`,
+            text: `Vence em ${diffDays === 0 ? "hoje" : `${diffDays} dia(s)`}. Valor em aberto: ${money.format(used)}.`,
+            tone: "blue",
+            priority: 2,
+            badge: "Vencimento",
+            action: "Separe o valor ou faça o pagamento parcial.",
+          });
+        }
+      }
+    });
+
+    recurringItems.filter((item) => item.is_active).forEach((item) => {
+      const occurrenceDates = getRecurringOccurrenceDates(item, selectedMonth);
+
+      occurrenceDates.forEach((occurrenceDate) => {
+        const dueDate = parseISODateSafe(occurrenceDate);
+        if (!dueDate) return;
+
+        const diffDays = Math.ceil((dueDate - referenceDate) / (1000 * 60 * 60 * 24));
+        const alreadyCreated = monthTransactions.some((transaction) => transaction.recurring_item_id === item.id && transaction.date === occurrenceDate);
+
+        if (!alreadyCreated && diffDays >= 0 && diffDays <= 5) {
+          addNotification({
+            title: `Fixo próximo: ${item.description}`,
+            text: `${item.type === "income" ? "Receita" : "Despesa"} ${getRecurringFrequencyLabel(item).toLowerCase()} de ${money.format(item.amount)} prevista para ${formatDateBR(occurrenceDate)}.`,
+            tone: item.type === "income" ? "emerald" : "blue",
+            priority: 3,
+            badge: "Fixo",
+            action: "Gere ou confirme esse lançamento no mês.",
+          });
+        }
+      });
+    });
+
+    goals.forEach((goal) => {
+      if (!goal.deadline || Number(goal.target_amount || 0) <= 0) return;
+      const progress = Number(goal.current_amount || 0) / Number(goal.target_amount || 1);
+      if (progress >= 1) return;
+      const deadline = new Date(`${goal.deadline}T00:00:00`);
+      const diffDays = Math.ceil((deadline - todayClean) / (1000 * 60 * 60 * 24));
+      const missing = Math.max(0, Number(goal.target_amount || 0) - Number(goal.current_amount || 0));
+
+      if (diffDays < 0) {
+        addNotification({
+          title: `Meta vencida: ${goal.title}`,
+          text: `Ainda faltam ${money.format(missing)} para concluir essa meta.`,
+          tone: "rose",
+          priority: 2,
+          badge: "Meta",
+          action: "Atualize o prazo ou ajuste o valor guardado.",
+        });
+      } else if (diffDays <= 30) {
+        addNotification({
+          title: `Meta próxima do prazo: ${goal.title}`,
+          text: `Faltam ${diffDays} dia(s) e ainda restam ${money.format(missing)}.`,
+          tone: progress >= 0.8 ? "emerald" : "amber",
+          priority: progress >= 0.8 ? 5 : 3,
+          badge: "Meta",
+          action: progress >= 0.8 ? "Você está perto, falta pouco." : "Considere reservar um valor este mês.",
+        });
+      }
+    });
+
+    const selectedMonthEndISO = getMonthEndISO(selectedMonth);
+    const futureInstallments = transactions.filter((item) => item.type === "expense" && item.installment_group_id && item.date > selectedMonthEndISO);
+    const futureInstallmentsTotal = futureInstallments.reduce((total, item) => total + Number(item.amount || 0), 0);
+    const futureInstallmentsGroups = new Set(futureInstallments.map((item) => item.installment_group_id)).size;
+
+    if (futureInstallmentsTotal > 0 && incomeBase > 0 && futureInstallmentsTotal / incomeBase >= 0.5) {
+      addNotification({
+        title: "Parcelas futuras relevantes",
+        text: `${futureInstallmentsGroups} compra(s) parcelada(s) ainda somam ${money.format(futureInstallmentsTotal)} nos próximos meses.`,
+        tone: "amber",
+        priority: 4,
+        badge: "Parcelas",
+        action: "Confira as compras parceladas na aba Cartões.",
+      });
+    }
+
+    if (summary.expense > 0 && summary.income === 0 && !preferences?.monthly_income) {
+      addNotification({
+        title: "Receita não cadastrada",
+        text: "Você tem despesas no mês, mas nenhuma receita/base mensal cadastrada.",
+        tone: "blue",
+        priority: 6,
+        badge: "Cadastro",
+        action: "Cadastre sua renda para melhorar os cálculos dos alertas.",
+      });
+    }
+
+    if (!limits.length && monthTransactions.some((item) => item.type === "expense")) {
+      addNotification({
+        title: "Crie limites por categoria",
+        text: "Você já tem despesas cadastradas. Definir limites deixa os alertas mais precisos.",
+        tone: "blue",
+        priority: 7,
+        badge: "Sugestão",
+        action: "Use a aba Limites para criar seu orçamento por categoria.",
+      });
+    }
+
+    return notifications
+      .sort((a, b) => a.priority - b.priority)
+      .slice(0, 9);
+  }, [selectedMonth, summary, previousSummary, preferences, categoryUsage, expenseByCategory, previousMonthTransactions, cardUsage, recurringItems, monthTransactions, goals, transactions, limits]);
 
   const calendarEvents = useMemo(() => {
     const events = monthTransactions.map((item) => ({ ...item, source: "transaction", day: Number(item.date.slice(8, 10)) }));
     recurringItems.filter((item) => item.is_active).forEach((item) => {
-      events.push({ ...item, id: `rec-${item.id}`, source: "recurring", day: Number(item.day_of_month), date: `${selectedMonth}-${String(item.day_of_month).padStart(2, "0")}` });
+      getRecurringOccurrenceDates(item, selectedMonth).forEach((date, index) => {
+        events.push({
+          ...item,
+          id: `rec-${item.id}-${date}-${index}`,
+          source: "recurring",
+          day: Number(date.slice(8, 10)),
+          date,
+        });
+      });
     });
     return events.sort((a, b) => a.day - b.day);
   }, [monthTransactions, recurringItems, selectedMonth]);
@@ -2652,28 +3215,27 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
 
     try {
       if (installments > 1) {
-        const groupId = uid();
-        const installmentAmount = Number((amount / installments).toFixed(2));
-        const rows = Array.from({ length: installments }).map((_, index) => {
-          const isLast = index === installments - 1;
-          const adjustedAmount = isLast ? Number((amount - installmentAmount * (installments - 1)).toFixed(2)) : installmentAmount;
-          return {
-            ...payload,
-            description: `${description} (${index + 1}/${installments})`,
-            amount: adjustedAmount,
-            date: addMonthsToISO(form.date, index),
-            installment_group_id: groupId,
-            installment_number: index + 1,
-            installment_total: installments,
-          };
-        });
+        const rows = buildInstallmentRows({
+          userId: user.id,
+          description,
+          category: form.category,
+          amount,
+          firstDate: form.date,
+          cardId: cleanCardId,
+          installments,
+          notes: form.notes,
+        }).map((row) => ({
+          ...row,
+          method: form.method,
+          card_id: cleanCardId,
+        }));
         const { error } = await supabase.from("transactions").insert(rows);
         if (error) throw error;
-        showToast(`${installments} parcelas criadas com sucesso.`);
+        showToast(cleanCardId ? `${installments} parcelas criadas e enviadas para a aba Cartões.` : `${installments} parcelas criadas com sucesso.`);
       } else {
         const { error } = await supabase.from("transactions").insert(payload);
         if (error) throw error;
-        showToast("Lançamento adicionado com sucesso.");
+        showToast(cleanCardId ? "Lançamento vinculado ao cartão e enviado para a aba Cartões." : "Lançamento adicionado com sucesso.");
       }
 
       setSelectedMonth(payload.date.slice(0, 7));
@@ -2767,6 +3329,43 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     });
     setPage("transactions");
     showToast("Lançamento duplicado no formulário. Revise a data e salve quando estiver pronto.", "info");
+  }
+
+  function handleRepeatPreviousExpense() {
+    const previousExpense = [...transactions]
+      .filter((item) => item.type === "expense" && !item.recurring_item_id && !item.recurrence_month)
+      .sort((a, b) => {
+        const dateDiff = new Date(b.date || 0) - new Date(a.date || 0);
+        if (dateDiff !== 0) return dateDiff;
+        return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+      })[0];
+
+    if (!previousExpense) {
+      showToast("Ainda não existe uma despesa anterior para repetir.", "info");
+      return;
+    }
+
+    const previousCardId = previousExpense.card_id && creditCards.some((card) => card.id === previousExpense.card_id && card.is_active)
+      ? previousExpense.card_id
+      : "";
+
+    setForm({
+      ...emptyForm,
+      type: "expense",
+      description: previousExpense.description || "",
+      category: previousExpense.category || "Mercado",
+      method: previousExpense.method || "Pix",
+      amount: String(previousExpense.amount || ""),
+      date: new Date().toISOString().slice(0, 10),
+      card_id: previousCardId,
+      is_installment: false,
+      installments: "1",
+      notes: previousExpense.notes || "",
+    });
+
+    setPage("transactions");
+    scrollToNewTransactionForm();
+    showToast("Despesa anterior copiada para o formulário. Revise a data e salve.", "info");
   }
 
   function handleDeleteTransaction(id) {
@@ -2960,29 +3559,31 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     });
   }
 
-  function buildRecurringTransactionRow(item, monthValue = selectedMonth) {
-    const [year, month] = monthValue.split("-");
-    const lastDay = daysInMonth(year, month);
-    const day = Math.min(Number(item.day_of_month || 1), lastDay);
+  function buildRecurringTransactionRows(item, monthValue = selectedMonth) {
+    const occurrenceDates = getRecurringOccurrenceDates(item, monthValue);
 
-    return {
+    return occurrenceDates.map((date, index) => ({
       user_id: user.id,
       type: item.type,
       description: item.description,
       category: item.category,
       method: item.method,
       amount: Number(item.amount),
-      date: `${monthValue}-${String(day).padStart(2, "0")}`,
+      date,
+      card_id: item.card_id || null,
       recurring_item_id: item.id,
-      recurrence_month: monthValue,
-    };
+      recurrence_month: occurrenceDates.length > 1 ? date : monthValue,
+      notes: occurrenceDates.length > 1 ? `${getRecurringFrequencyLabel(item)} · ocorrência ${index + 1}` : getRecurringFrequencyLabel(item),
+    }));
   }
 
   async function syncRecurringItemsForMonth(items = recurringItems, monthValue = selectedMonth) {
     const activeItems = items.filter((item) => item?.is_active);
     if (!activeItems.length) return { count: 0 };
 
-    const rows = activeItems.map((item) => buildRecurringTransactionRow(item, monthValue));
+    const rows = activeItems.flatMap((item) => buildRecurringTransactionRows(item, monthValue));
+    if (!rows.length) return { count: 0 };
+
     const { error } = await supabase.from("transactions").upsert(rows, {
       onConflict: "user_id,recurring_item_id,recurrence_month",
     });
@@ -2994,11 +3595,17 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
   async function handleRecurringSubmit(event) {
     event.preventDefault();
     const amount = toNumber(recurringForm.amount);
-    const day = Number(recurringForm.day_of_month);
     const description = recurringForm.description.trim();
+    const schedulePayload = normalizeRecurringFormPayload(recurringForm, selectedMonth);
+    const startDate = parseISODateSafe(schedulePayload.start_date);
 
-    if (!description || !amount || amount <= 0 || day < 1 || day > 31) {
-      showToast("Preencha descrição, valor e dia válido entre 1 e 31.");
+    if (!description || !amount || amount <= 0 || !startDate) {
+      showToast("Preencha descrição, valor e uma data inicial válida.");
+      return;
+    }
+
+    if (schedulePayload.day_of_month < 1 || schedulePayload.day_of_month > 31) {
+      showToast("Informe um dia do mês válido entre 1 e 31.", "warning");
       return;
     }
 
@@ -3012,7 +3619,10 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
           category: recurringForm.category,
           method: recurringForm.method,
           amount,
-          day_of_month: day,
+          day_of_month: schedulePayload.day_of_month,
+          recurrence_type: schedulePayload.recurrence_type,
+          interval_months: schedulePayload.interval_months,
+          start_date: schedulePayload.start_date,
           is_active: recurringForm.is_active,
         })
         .select("*")
@@ -3025,7 +3635,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
       }
 
       setRecurringForm(emptyRecurringForm);
-      showToast(createdRecurring?.is_active ? "Item fixo criado e lançado automaticamente neste mês." : "Item fixo criado como inativo.", "success");
+      showToast(createdRecurring?.is_active ? "Item fixo criado e sincronizado conforme a recorrência." : "Item fixo criado como inativo.", "success");
       await loadAllData();
     } catch (error) {
       showToast(`Erro ao salvar recorrência: ${error.message}`, "error");
@@ -3040,6 +3650,9 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
       category: item.category || defaultCategories[item.type || "expense"][0],
       method: item.method || "Pix",
       amount: String(item.amount || ""),
+      recurrence_type: item.recurrence_type || "monthly",
+      interval_months: String(item.interval_months || "2"),
+      start_date: item.start_date || todayISODate(),
       day_of_month: String(item.day_of_month || "5"),
       is_active: Boolean(item.is_active),
     });
@@ -3053,16 +3666,22 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
   async function handleEditRecurringSubmit(event) {
     event.preventDefault();
     const amount = toNumber(editRecurringForm.amount);
-    const day = Number(editRecurringForm.day_of_month);
     const description = editRecurringForm.description.trim();
+    const schedulePayload = normalizeRecurringFormPayload(editRecurringForm, selectedMonth);
+    const startDate = parseISODateSafe(schedulePayload.start_date);
 
     if (!editingRecurringId) {
       showToast("Nenhum item fixo selecionado para edição.", "warning");
       return;
     }
 
-    if (!description || !amount || amount <= 0 || day < 1 || day > 31) {
-      showToast("Preencha descrição, valor e dia válido entre 1 e 31.", "warning");
+    if (!description || !amount || amount <= 0 || !startDate) {
+      showToast("Preencha descrição, valor e uma data inicial válida.", "warning");
+      return;
+    }
+
+    if (schedulePayload.day_of_month < 1 || schedulePayload.day_of_month > 31) {
+      showToast("Informe um dia do mês válido entre 1 e 31.", "warning");
       return;
     }
 
@@ -3075,7 +3694,10 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
           category: editRecurringForm.category,
           method: editRecurringForm.method,
           amount,
-          day_of_month: day,
+          day_of_month: schedulePayload.day_of_month,
+          recurrence_type: schedulePayload.recurrence_type,
+          interval_months: schedulePayload.interval_months,
+          start_date: schedulePayload.start_date,
           is_active: editRecurringForm.is_active,
         })
         .eq("id", editingRecurringId)
@@ -3089,7 +3711,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
         await syncRecurringItemsForMonth([normalizeRecurring(updatedRecurring)], selectedMonth);
       }
 
-      showToast(updatedRecurring?.is_active ? "Item fixo atualizado e sincronizado neste mês." : "Item fixo atualizado como inativo.", "success");
+      showToast(updatedRecurring?.is_active ? "Item fixo atualizado e sincronizado conforme a recorrência." : "Item fixo atualizado como inativo.", "success");
       closeEditRecurringModal();
       await loadAllData();
     } catch (error) {
@@ -3155,11 +3777,11 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
       const { count } = await syncRecurringItemsForMonth(recurringItems, selectedMonth);
 
       if (!count) {
-        showToast("Você não possui itens fixos ativos para sincronizar.", "warning");
+        showToast("Nenhum fixo ativo possui ocorrência para este mês.", "warning");
         return;
       }
 
-      showToast(`${count} fixo(s) sincronizado(s) em ${monthLabel(selectedMonth)}.`, "success");
+      showToast(`${count} ocorrência(s) fixa(s) sincronizada(s) em ${monthLabel(selectedMonth)}.`, "success");
       await loadAllData();
     } catch (error) {
       showToast(`Erro ao sincronizar fixos: ${error.message}`, "error");
@@ -3319,6 +3941,53 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     }
   }
 
+  async function handleCardInstallmentPurchaseSubmit(purchase) {
+    const card = creditCards.find((item) => item.id === purchase.card_id);
+    const amount = toNumber(purchase.amount);
+    const installments = clampInstallments(purchase.installments);
+    const description = String(purchase.description || "").trim();
+    const firstDate = purchase.first_date || new Date().toISOString().slice(0, 10);
+
+    if (!card) {
+      showToast("Selecione um cartão para lançar a compra parcelada.", "warning");
+      return false;
+    }
+
+    if (!isCreditLikeCardType(card.card_type)) {
+      showToast("Parcelamento está disponível apenas para cartões de crédito.", "warning");
+      return false;
+    }
+
+    if (!description || !purchase.category || !amount || amount <= 0 || installments < 2) {
+      showToast("Preencha descrição, categoria, valor total e no mínimo 2 parcelas.", "warning");
+      return false;
+    }
+
+    try {
+      const rows = buildInstallmentRows({
+        userId: user.id,
+        description,
+        category: purchase.category,
+        amount,
+        firstDate,
+        cardId: card.id,
+        installments,
+        notes: purchase.notes,
+      });
+
+      const { error } = await supabase.from("transactions").insert(rows);
+      if (error) throw error;
+
+      setSelectedMonth(firstDate.slice(0, 7));
+      showToast(`Compra parcelada criada no ${card.name}: ${installments}x de aproximadamente ${money.format(amount / installments)}.`, "success");
+      await loadAllData();
+      return true;
+    } catch (error) {
+      showToast(`Erro ao criar compra parcelada: ${error.message}`, "error");
+      return false;
+    }
+  }
+
   function deleteCardAdjustment(id) {
     openConfirmModal({
       title: "Excluir ajuste do cartão",
@@ -3438,6 +4107,120 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
           await loadAllData();
         } catch (error) {
           showToast(`Erro ao apagar dados: ${error.message}`, "error");
+        }
+      },
+    });
+  }
+
+
+
+  async function handlePaymentAllocationSubmit(allocation) {
+    const value = toNumber(allocation.amount);
+
+    if (!value || value <= 0) {
+      showToast("Informe um valor maior que zero para registrar o pagamento.", "warning");
+      return;
+    }
+
+    let linkedCardAdjustmentId = null;
+
+    try {
+      if (allocation.target_type === "card" && allocation.target_card_id) {
+        const card = creditCards.find((item) => item.id === allocation.target_card_id);
+        const adjustmentType = card && isStoredValueCardType(card.card_type) ? "credit" : "payment";
+        const { data: createdAdjustment, error: adjustmentError } = await supabase
+          .from("card_adjustments")
+          .insert({
+            user_id: user.id,
+            card_id: allocation.target_card_id,
+            adjustment_type: adjustmentType,
+            amount: value,
+            date: allocation.payment_date,
+            notes: allocation.notes || allocation.target_label || null,
+          })
+          .select("id")
+          .single();
+
+        if (adjustmentError) throw adjustmentError;
+        linkedCardAdjustmentId = createdAdjustment?.id || null;
+      }
+
+      if (allocation.target_type === "goal" && allocation.target_goal_id) {
+        const goal = goals.find((item) => item.id === allocation.target_goal_id);
+        if (goal) {
+          const nextAmount = Math.min(Number(goal.target_amount || 0), Number(goal.current_amount || 0) + value);
+          const { error: goalError } = await supabase
+            .from("goals")
+            .update({ current_amount: nextAmount })
+            .eq("id", goal.id)
+            .eq("user_id", user.id);
+          if (goalError) throw goalError;
+        }
+      }
+
+      const { error } = await supabase.from("payment_allocations").insert({
+        user_id: user.id,
+        source_type: allocation.source_type,
+        source_transaction_id: allocation.source_transaction_id || null,
+        target_type: allocation.target_type,
+        target_transaction_id: allocation.target_transaction_id || null,
+        target_card_id: allocation.target_card_id || null,
+        target_goal_id: allocation.target_goal_id || null,
+        target_label: allocation.target_label || null,
+        target_amount: toNumber(allocation.target_amount) || null,
+        card_adjustment_id: linkedCardAdjustmentId,
+        amount: value,
+        payment_date: allocation.payment_date,
+        notes: allocation.notes || null,
+      });
+
+      if (error) throw error;
+      showToast("Pagamento registrado com sucesso.", "success");
+      await loadAllData();
+    } catch (error) {
+      showToast(`Erro ao registrar pagamento: ${error.message}`, "error");
+    }
+  }
+
+  function deletePaymentAllocation(id) {
+    const allocation = paymentAllocations.find((item) => item.id === id);
+
+    openConfirmModal({
+      title: "Excluir pagamento",
+      message: "Deseja excluir este pagamento/abatimento? Os saldos vinculados serão recalculados quando possível.",
+      confirmText: "Excluir",
+      cancelText: "Cancelar",
+      danger: true,
+      onConfirm: async () => {
+        try {
+          if (allocation?.card_adjustment_id) {
+            const { error: adjustmentError } = await supabase
+              .from("card_adjustments")
+              .delete()
+              .eq("id", allocation.card_adjustment_id)
+              .eq("user_id", user.id);
+            if (adjustmentError) throw adjustmentError;
+          }
+
+          if (allocation?.target_type === "goal" && allocation?.target_goal_id) {
+            const goal = goals.find((item) => item.id === allocation.target_goal_id);
+            if (goal) {
+              const nextAmount = Math.max(0, Number(goal.current_amount || 0) - Number(allocation.amount || 0));
+              const { error: goalError } = await supabase
+                .from("goals")
+                .update({ current_amount: nextAmount })
+                .eq("id", goal.id)
+                .eq("user_id", user.id);
+              if (goalError) throw goalError;
+            }
+          }
+
+          const { error } = await supabase.from("payment_allocations").delete().eq("id", id).eq("user_id", user.id);
+          if (error) throw error;
+          showToast("Pagamento excluído com sucesso.", "success");
+          await loadAllData();
+        } catch (error) {
+          showToast(`Erro ao excluir pagamento: ${error.message}`, "error");
         }
       },
     });
@@ -3896,14 +4679,26 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     { key: "annual", label: "Anual", icon: <CalendarRange size={17} /> },
     { key: "recurring", label: "Fixos", icon: <Repeat size={17} /> },
     { key: "transactions", label: "Lançamentos", icon: <Wallet size={17} /> },
+    { key: "payments", label: "Pagamentos", icon: <CheckCircle2 size={17} /> },
     { key: "cards", label: "Cartões", icon: <CreditCard size={17} /> },
     { key: "goals", label: "Metas", icon: <Target size={17} /> },
     { key: "limits", label: "Limites", icon: <PiggyBank size={17} /> },
     { key: "calendar", label: "Calendário", icon: <CalendarClock size={17} /> },
     { key: "reports", label: "Relatórios", icon: <FileText size={17} /> },
-    { key: "profile", label: "Perfil", icon: <UserRound size={17} /> },
-    { key: "settings", label: "Configurações", icon: <Settings size={17} /> },
+    { key: "account", label: "Conta", icon: <UserRound size={17} /> },
   ];
+
+  const primaryTabKeys = ["dashboard", "transactions", "cards", "payments", "reports"];
+  const moreTabKeys = ["annual", "recurring", "goals", "limits", "calendar", "account"];
+  const primaryTabs = primaryTabKeys.map((key) => tabs.find((tab) => tab.key === key)).filter(Boolean);
+  const moreTabs = moreTabKeys.map((key) => tabs.find((tab) => tab.key === key)).filter(Boolean);
+  const isMoreMenuActive = moreTabs.some((tab) => tab.key === page);
+
+  function navigateDashboardTab(key) {
+    setMoreMenuOpen(false);
+    setAccountMenuOpen(false);
+    setPage(key);
+  }
 
   function openTransactionsWithFilters({ categories = ["Todas"], types = ["all"], cards = ["all"], date = "", search = "", sort = "recent" } = {}) {
     setQuery(search);
@@ -3922,6 +4717,69 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     showToast(`Painel de ${monthLabel(monthValue)} aberto.`, "info");
   }
 
+  function scrollToNewTransactionForm() {
+    window.setTimeout(() => {
+      document.getElementById("new-transaction-form-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 120);
+  }
+
+  function handleMobileQuickAction(action) {
+    setMobileQuickActionsOpen(false);
+
+    if (action === "repeat") {
+      handleRepeatPreviousExpense();
+      return;
+    }
+
+    if (action === "installment") {
+      setPage("cards");
+      showToast("Abra o cartão desejado e toque em Nova compra parcelada.", "info");
+      return;
+    }
+
+    if (action === "card-payment") {
+      setPage("cards");
+      showToast("Abra o cartão e registre o pagamento ou recarga no controle do cartão.", "info");
+      return;
+    }
+
+    if (action === "goal") {
+      setPage("goals");
+      showToast("Use o formulário de metas para criar ou atualizar seu objetivo.", "info");
+      return;
+    }
+
+    if (action === "expense" || action === "income") {
+      setForm({
+        ...emptyForm,
+        type: action,
+        category: defaultCategories[action][0],
+        method: action === "income" ? "Pix" : "Pix",
+        date: new Date().toISOString().slice(0, 10),
+      });
+      setPage("transactions");
+      scrollToNewTransactionForm();
+      return;
+    }
+
+    if (action === "payment") {
+      setPage("payments");
+      showToast("Abra a origem e o destino para registrar o pagamento.", "info");
+      return;
+    }
+
+    if (action === "card") {
+      setPage("cards");
+      showToast("Use o botão de compra parcelada no cartão selecionado.", "info");
+      return;
+    }
+
+    if (action === "recurring") {
+      setPage("recurring");
+      showToast("Cadastre um fixo conforme a frequência desejada.", "info");
+    }
+  }
+
   if (loadingData || !minimumDataLoadingDone) {
     return (
       <LoadingScreen
@@ -3932,7 +4790,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-5 pb-28 sm:px-6 lg:px-8 lg:pb-8">
+    <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-6 px-4 py-5 pb-28 sm:px-6 lg:px-8 lg:pb-8">
       <EditTransactionModal
         open={Boolean(editingId)}
         form={editForm}
@@ -3979,56 +4837,140 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
 
       <ToastCustom toast={toast} onClose={hideToast} />
       <ConfirmModal modal={confirmModal} onClose={closeConfirmModal} />
+      <MobileQuickActionFab
+        open={mobileQuickActionsOpen}
+        setOpen={setMobileQuickActionsOpen}
+        onAction={handleMobileQuickAction}
+        page={page}
+      />
 
-      <header className="dashboard-header surface-card rounded-[2rem] p-4 shadow-sm">
-        <div className="dashboard-brand">
-          <img src={logoEA} alt="Logo" className="dashboard-logo h-11 w-11 rounded-2xl object-cover" />
+      <header className="dashboard-header dashboard-header-premium surface-card rounded-[2rem] p-4 shadow-sm">
+        <div className="dashboard-brand dashboard-brand-premium">
+          <img src={logoEA} alt="Logo" className="dashboard-logo dashboard-logo-premium h-9 w-9 rounded-xl object-cover" />
           <div className="min-w-0">
             <div className="dashboard-title-row">
-              <h1 className="dashboard-title">Controle Financeiro</h1>
-              <span className="dashboard-user-pill">{userName}</span>
+              <h1 className="dashboard-title dashboard-title-premium">Controle Financeiro</h1>
             </div>
-            <p className="dashboard-subtitle muted-text">Painel financeiro pessoal</p>
           </div>
         </div>
 
-        <div className="dashboard-actions">
+        <div className="dashboard-actions dashboard-actions-premium">
           <MonthSelector value={selectedMonth} onChange={setSelectedMonth} years={availableYears} />
-          <button onClick={() => setDarkMode((value) => !value)} className="theme-button dashboard-action-button inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-bold transition hover:scale-[1.02]">
-            {darkMode ? <Sun size={17} /> : <Moon size={17} />}
-            {darkMode ? "Modo claro" : "Modo escuro"}
-          </button>
-          <button onClick={onHome} className="outline-button dashboard-action-button inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-bold">
-            <Home size={17} /> Home
-          </button>
           <button
-            onClick={() =>
-              openConfirmModal({
-                title: "Sair da conta",
-                message: "Tem certeza que deseja sair da sua conta?",
-                confirmText: "Sair",
-                cancelText: "Cancelar",
-                danger: false,
-                onConfirm: onSignOut,
-              })
-            }
-            className="signout-button dashboard-action-button inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-black transition"
+            onClick={() => setDarkMode((value) => !value)}
+            className="theme-button header-icon-button dashboard-action-button inline-flex items-center gap-2 rounded-2xl px-3 py-2 text-sm font-bold transition hover:scale-[1.02]"
+            title={darkMode ? "Ativar modo claro" : "Ativar modo escuro"}
           >
-            <LogOut size={17} /> Sair
+            {darkMode ? <Sun size={16} /> : <Moon size={16} />}
+            <span>{darkMode ? "Claro" : "Escuro"}</span>
           </button>
+
+          <div className="dashboard-account-menu">
+            <button
+              type="button"
+              onClick={() => {
+                setMoreMenuOpen(false);
+                setAccountMenuOpen((value) => !value);
+              }}
+              className="account-menu-button dashboard-action-button inline-flex items-center gap-2 rounded-2xl px-3 py-2 text-sm font-black transition"
+              aria-haspopup="menu"
+              aria-expanded={accountMenuOpen}
+              title="Abrir menu da conta"
+            >
+              <UserRound size={16} />
+              <span className="account-menu-name">{userName}</span>
+              <span className="account-menu-caret">▾</span>
+            </button>
+
+            {accountMenuOpen && (
+              <div className="account-menu-panel" role="menu">
+                <div className="account-menu-header">
+                  <strong>{userName}</strong>
+                  <span>{user.email}</span>
+                </div>
+                <button type="button" onClick={() => navigateDashboardTab("account")} className="account-menu-item" role="menuitem">
+                  <UserRound size={16} /> Minha conta
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAccountMenuOpen(false);
+                    onHome();
+                  }}
+                  className="account-menu-item"
+                  role="menuitem"
+                >
+                  <Home size={16} /> Home
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAccountMenuOpen(false);
+                    openConfirmModal({
+                      title: "Sair da conta",
+                      message: "Tem certeza que deseja sair da sua conta?",
+                      confirmText: "Sair",
+                      cancelText: "Cancelar",
+                      danger: false,
+                      onConfirm: onSignOut,
+                    });
+                  }}
+                  className="account-menu-item account-menu-item-danger"
+                  role="menuitem"
+                >
+                  <LogOut size={16} /> Sair da conta
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
-      <nav className="dashboard-tabs surface-card rounded-[2rem] p-2 shadow-sm" aria-label="Menu principal do painel">
-        {tabs.map((tab) => (
+      <nav className="dashboard-tabs dashboard-tabs-compact surface-card rounded-[2rem] p-2 shadow-sm" aria-label="Menu principal do painel">
+        {primaryTabs.map((tab) => (
           <button
             key={tab.key}
-            onClick={() => setPage(tab.key)}
+            onClick={() => navigateDashboardTab(tab.key)}
             className={classNames("dashboard-tab-button inline-flex items-center justify-center gap-2 rounded-2xl px-3 py-2 text-sm font-black transition", page === tab.key ? "dashboard-tab-active" : "ghost-button")}
           >
             {tab.icon} <span>{tab.label}</span>
           </button>
         ))}
+
+        <div className="dashboard-more-menu">
+          <button
+            type="button"
+            onClick={() => setMoreMenuOpen((value) => !value)}
+            className={classNames("dashboard-tab-button inline-flex items-center justify-center gap-2 rounded-2xl px-3 py-2 text-sm font-black transition", isMoreMenuActive || moreMenuOpen ? "dashboard-tab-active" : "ghost-button")}
+            aria-haspopup="menu"
+            aria-expanded={moreMenuOpen}
+          >
+            <ListFilter size={17} /> <span>Mais</span> <span className="text-xs">▾</span>
+          </button>
+
+          {moreMenuOpen && (
+            <div className="dashboard-more-panel" role="menu">
+              <div className="dashboard-more-header">
+                <strong>Mais opções</strong>
+                <span>Planejamento, ajustes e visão anual</span>
+              </div>
+              <div className="dashboard-more-grid">
+                {moreTabs.map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => navigateDashboardTab(tab.key)}
+                    className={classNames("dashboard-more-item", page === tab.key && "dashboard-more-item-active")}
+                    role="menuitem"
+                  >
+                    {tab.icon}
+                    <span>{tab.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </nav>
 
       {preferences && !preferences.onboarding_completed && (
@@ -4052,6 +4994,13 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
           </div>
         </section>
       )}
+
+      <MobileQuickShortcuts
+        onExpense={() => handleMobileQuickAction("expense")}
+        onIncome={() => handleMobileQuickAction("income")}
+        onPayment={() => handleMobileQuickAction("payment")}
+        onCards={() => handleMobileQuickAction("card")}
+      />
 
       {page === "dashboard" && (
         <DashboardOverview
@@ -4077,8 +5026,11 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
           form={form}
           setForm={setForm}
           resetForm={resetTransactionForm}
+          onRepeatPreviousExpense={handleRepeatPreviousExpense}
           onSubmit={handleTransactionSubmit}
-          visibleTransactions={visibleTransactions}
+          visibleTransactions={visibleRegularTransactions}
+          separatedCardTransactions={visibleCardTransactions}
+          onOpenCards={() => setPage("cards")}
           allCategories={allCategories}
           query={query}
           setQuery={setQuery}
@@ -4102,11 +5054,29 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
         />
       )}
 
+      {page === "payments" && (
+        <PaymentsPage
+          selectedMonth={selectedMonth}
+          summary={summary}
+          transactions={transactions}
+          monthTransactions={monthTransactions}
+          creditCards={creditCards}
+          cardUsage={cardUsage}
+          goals={goals}
+          paymentAllocations={paymentAllocations}
+          onSubmit={handlePaymentAllocationSubmit}
+          onDelete={deletePaymentAllocation}
+          onOpenTransactions={openTransactionsWithFilters}
+          onOpenCards={() => setPage("cards")}
+          onOpenGoals={() => setPage("goals")}
+        />
+      )}
+
       {page === "goals" && <GoalsPage goals={goals} goalForm={goalForm} setGoalForm={setGoalForm} onSubmit={handleGoalSubmit} onEdit={editGoal} onDelete={deleteGoal} onDeposit={addGoalDeposit} />}
 
       {page === "limits" && <LimitsPage limitForm={limitForm} setLimitForm={setLimitForm} categoryUsage={categoryUsage} onSubmit={handleLimitSubmit} onDelete={deleteLimit} expenseByCategory={expenseByCategory} />}
 
-      {page === "cards" && <CardsPage cardForm={cardForm} setCardForm={setCardForm} onSubmit={handleCardSubmit} onEdit={editCard} onDelete={deleteCard} cardUsage={cardUsage} transactions={transactions} cardAdjustments={cardAdjustments} selectedMonth={selectedMonth} onCardAdjustment={handleCardAdjustment} onDeleteCardAdjustment={deleteCardAdjustment} />}
+      {page === "cards" && <CardsPage cardForm={cardForm} setCardForm={setCardForm} onSubmit={handleCardSubmit} onEdit={editCard} onDelete={deleteCard} cardUsage={cardUsage} transactions={transactions} cardAdjustments={cardAdjustments} selectedMonth={selectedMonth} onCardAdjustment={handleCardAdjustment} onDeleteCardAdjustment={deleteCardAdjustment} onInstallmentPurchase={handleCardInstallmentPurchaseSubmit} onEditTransaction={handleEditTransaction} onDeleteTransaction={handleDeleteTransaction} onDuplicateTransaction={handleDuplicateTransaction} onViewTransaction={setSelectedTransaction} creditCards={creditCards} />}
 
       {page === "recurring" && (
         <RecurringPage
@@ -4128,9 +5098,28 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
 
       {page === "reports" && <ReportsPage summary={summary} selectedMonth={selectedMonth} visibleTransactions={visibleTransactions} topExpenses={topExpenses} goals={goals} exportCSV={exportCSV} exportExcel={exportExcel} exportPDF={exportPDF} exportBackup={exportBackup} onOpenTransactions={openTransactionsWithFilters} setPage={setPage} />}
 
-      {page === "profile" && <ProfilePage user={user} profileName={profileName} setProfileName={setProfileName} onSubmit={updateProfile} />}
-
-      {page === "settings" && <SettingsPage preferencesForm={preferencesForm} setPreferencesForm={setPreferencesForm} onSubmit={savePreferences} exportBackup={exportBackup} importBackup={importBackup} deleteAllUserData={deleteAllUserData} />}
+      {(page === "account" || page === "profile" || page === "settings") && (
+        <AccountPage
+          user={user}
+          profileName={profileName}
+          setProfileName={setProfileName}
+          onProfileSubmit={updateProfile}
+          preferencesForm={preferencesForm}
+          setPreferencesForm={setPreferencesForm}
+          onPreferencesSubmit={savePreferences}
+          exportBackup={exportBackup}
+          importBackup={importBackup}
+          deleteAllUserData={deleteAllUserData}
+          onSignOut={onSignOut}
+          setPage={setPage}
+          stats={{
+            transactions: transactions.length,
+            cards: creditCards.length,
+            goals: goals.length,
+            recurring: recurringItems.length,
+          }}
+        />
+      )}
 
       <MobileBottomNav tabs={tabs} page={page} setPage={setPage} />
     </div>
@@ -4139,18 +5128,528 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
 
 
 
-function MobileBottomNav({ tabs, page, setPage }) {
-  const allowed = ["dashboard", "transactions", "goals", "cards", "reports"];
-  const mobileTabs = tabs.filter((tab) => allowed.includes(tab.key));
+
+function PaymentsPage({ selectedMonth, summary, transactions, monthTransactions, creditCards, cardUsage, goals, paymentAllocations, onSubmit, onDelete, onOpenTransactions, onOpenCards, onOpenGoals }) {
+  const initialForm = {
+    source_type: "income",
+    source_transaction_id: "",
+    manual_source_amount: "",
+    target_type: "transaction",
+    target_transaction_id: "",
+    target_card_id: "",
+    target_goal_id: "",
+    manual_target_label: "",
+    manual_target_amount: "",
+    amount: "",
+    payment_date: new Date().toISOString().slice(0, 10),
+    notes: "",
+  };
+
+  const [form, setForm] = useState(initialForm);
+
+  const monthAllocations = useMemo(() => {
+    return paymentAllocations.filter((item) => item.payment_date?.slice(0, 7) === selectedMonth);
+  }, [paymentAllocations, selectedMonth]);
+
+  const incomeTransactions = useMemo(() => {
+    return monthTransactions.filter((item) => item.type === "income").sort((a, b) => new Date(b.date) - new Date(a.date));
+  }, [monthTransactions]);
+
+  const expenseTargets = useMemo(() => {
+    return monthTransactions
+      .filter((item) => item.type === "expense")
+      .map((item) => {
+        const paid = paymentAllocations
+          .filter((payment) => payment.target_type === "transaction" && payment.target_transaction_id === item.id)
+          .reduce((total, payment) => total + Number(payment.amount || 0), 0);
+        const remaining = Math.max(0, Number(item.amount || 0) - paid);
+        const cardName = item.card_id ? creditCards.find((card) => card.id === item.card_id)?.name : "";
+        return { ...item, paid, remaining, cardName };
+      })
+      .sort((a, b) => b.remaining - a.remaining || new Date(b.date) - new Date(a.date));
+  }, [monthTransactions, paymentAllocations, creditCards]);
+
+  const positiveBalance = Math.max(0, Number(summary.balance || 0));
+  const balanceUsed = monthAllocations
+    .filter((item) => item.source_type === "balance")
+    .reduce((total, item) => total + Number(item.amount || 0), 0);
+  const availableBalance = Math.max(0, positiveBalance - balanceUsed);
+
+  function sourceUsedByIncome(transactionId) {
+    return paymentAllocations
+      .filter((item) => item.source_type === "income" && item.source_transaction_id === transactionId)
+      .reduce((total, item) => total + Number(item.amount || 0), 0);
+  }
+
+  function update(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function getSelectedSource() {
+    if (form.source_type === "income") {
+      const income = incomeTransactions.find((item) => item.id === form.source_transaction_id);
+      if (!income) return { label: "Selecione uma receita", total: 0, available: 0 };
+      const used = sourceUsedByIncome(income.id);
+      return {
+        label: income.description,
+        total: Number(income.amount || 0),
+        available: Math.max(0, Number(income.amount || 0) - used),
+      };
+    }
+
+    if (form.source_type === "balance") {
+      return { label: "Saldo disponível do mês", total: positiveBalance, available: availableBalance };
+    }
+
+    const manual = toNumber(form.manual_source_amount);
+    return { label: "Valor manual", total: manual || 0, available: manual || 0 };
+  }
+
+  function getSelectedTarget() {
+    if (form.target_type === "transaction") {
+      const target = expenseTargets.find((item) => item.id === form.target_transaction_id);
+      if (!target) return { label: "Selecione uma despesa", total: 0, remaining: 0 };
+      return {
+        label: target.description,
+        total: Number(target.amount || 0),
+        remaining: Number(target.remaining || 0),
+        extra: `${target.category}${target.cardName ? ` · ${target.cardName}` : ""}`,
+      };
+    }
+
+    if (form.target_type === "card") {
+      const card = cardUsage.find((item) => item.id === form.target_card_id);
+      if (!card) return { label: "Selecione um cartão", total: 0, remaining: 0 };
+      return {
+        label: card.name,
+        total: Number(card.total_available_base || card.card_limit || 0),
+        remaining: Number(card.spent || 0),
+        extra: card.stored_value_card ? "Recarga/saldo" : "Fatura em aberto",
+      };
+    }
+
+    if (form.target_type === "goal") {
+      const goal = goals.find((item) => item.id === form.target_goal_id);
+      if (!goal) return { label: "Selecione uma meta", total: 0, remaining: 0 };
+      return {
+        label: goal.title,
+        total: Number(goal.target_amount || 0),
+        remaining: Math.max(0, Number(goal.target_amount || 0) - Number(goal.current_amount || 0)),
+        extra: "Meta financeira",
+      };
+    }
+
+    const manual = toNumber(form.manual_target_amount);
+    return {
+      label: form.manual_target_label || "Destino manual",
+      total: manual || 0,
+      remaining: manual || 0,
+      extra: "Destino informado manualmente",
+    };
+  }
+
+  const selectedSource = getSelectedSource();
+  const selectedTarget = getSelectedTarget();
+  const amount = toNumber(form.amount);
+  const targetAfter = Math.max(0, Number(selectedTarget.remaining || 0) - Number(amount || 0));
+  const canPayAll = Number(selectedTarget.remaining || 0) > 0 && Number(selectedSource.available || 0) >= Number(selectedTarget.remaining || 0);
+  const resultLabel = !amount
+    ? "Informe um valor para simular."
+    : targetAfter === 0
+      ? "Destino quitado/pago por completo."
+      : "Pagamento parcial registrado.";
+
+  function fillSuggestedAmount() {
+    const suggested = Math.min(Number(selectedSource.available || 0), Number(selectedTarget.remaining || 0));
+    if (suggested > 0) update("amount", String(Number(suggested.toFixed(2))));
+  }
+
+  function handleSubmit(event) {
+    event.preventDefault();
+
+    const value = toNumber(form.amount);
+    const target = getSelectedTarget();
+    const source = getSelectedSource();
+
+    if (!value || value <= 0) return;
+    if (source.available <= 0) return;
+    if (target.remaining <= 0) return;
+    if (value > source.available) return;
+    if (value > target.remaining) return;
+
+    onSubmit({
+      source_type: form.source_type,
+      source_transaction_id: form.source_type === "income" ? form.source_transaction_id : null,
+      target_type: form.target_type,
+      target_transaction_id: form.target_type === "transaction" ? form.target_transaction_id : null,
+      target_card_id: form.target_type === "card" ? form.target_card_id : null,
+      target_goal_id: form.target_type === "goal" ? form.target_goal_id : null,
+      target_label: target.label,
+      target_amount: target.total || target.remaining,
+      amount: value,
+      payment_date: form.payment_date,
+      notes: form.notes,
+    });
+
+    setForm(initialForm);
+  }
+
+  function allocationSourceLabel(item) {
+    if (item.source_type === "income") {
+      return transactions.find((transaction) => transaction.id === item.source_transaction_id)?.description || "Receita vinculada";
+    }
+    if (item.source_type === "balance") return "Saldo do mês";
+    return "Valor manual";
+  }
+
+  function allocationTargetLabel(item) {
+    if (item.target_type === "transaction") return transactions.find((transaction) => transaction.id === item.target_transaction_id)?.description || item.target_label || "Despesa";
+    if (item.target_type === "card") return creditCards.find((card) => card.id === item.target_card_id)?.name || item.target_label || "Cartão";
+    if (item.target_type === "goal") return goals.find((goal) => goal.id === item.target_goal_id)?.title || item.target_label || "Meta";
+    return item.target_label || "Destino manual";
+  }
+
+  const paidTotal = monthAllocations.reduce((total, item) => total + Number(item.amount || 0), 0);
+  const partialTargets = expenseTargets.filter((item) => item.paid > 0 && item.remaining > 0).length;
+  const paidTargets = expenseTargets.filter((item) => item.paid > 0 && item.remaining <= 0).length;
+
   return (
-    <nav className="mobile-bottom-nav" aria-label="Menu rápido mobile">
-      {mobileTabs.map((tab) => (
-        <button key={tab.key} onClick={() => setPage(tab.key)} className={classNames("mobile-bottom-button", page === tab.key && "mobile-bottom-active")}>
-          {tab.icon}
-          <span>{tab.label}</span>
+    <main className="grid gap-6">
+      <section className="dashboard-metrics-grid grid gap-4 md:grid-cols-4">
+        <MetricCard title="Pagamentos no mês" value={money.format(paidTotal)} icon={<CheckCircle2 />} tone="emerald" />
+        <MetricCard title="Saldo disponível" value={money.format(availableBalance)} icon={<Wallet />} tone="blue" />
+        <MetricCard title="Pagos por completo" value={String(paidTargets)} icon={<CheckCircle2 />} tone="emerald" />
+        <MetricCard title="Parciais" value={String(partialTargets)} icon={<PiggyBank />} tone="amber" />
+      </section>
+
+      <section className="grid gap-6 xl:grid-cols-[420px_1fr]">
+        <section className="surface-card rounded-[2rem] p-5 shadow-sm">
+          <div className="mb-5">
+            <h2 className="text-2xl font-black">Novo pagamento</h2>
+            <p className="muted-text mt-1 text-sm">Use uma receita, saldo ou valor manual para quitar despesas, cartões ou metas.</p>
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <Field label="De onde vem o valor">
+              <select value={form.source_type} onChange={(event) => update("source_type", event.target.value)} className="input">
+                <option value="income">Receita cadastrada</option>
+                <option value="balance">Saldo disponível do mês</option>
+                <option value="manual">Valor manual</option>
+              </select>
+            </Field>
+
+            {form.source_type === "income" && (
+              <Field label="Receita">
+                <select value={form.source_transaction_id} onChange={(event) => update("source_transaction_id", event.target.value)} className="input">
+                  <option value="">Selecione uma receita</option>
+                  {incomeTransactions.map((item) => {
+                    const available = Math.max(0, Number(item.amount || 0) - sourceUsedByIncome(item.id));
+                    return <option key={item.id} value={item.id}>{item.description} — disponível {money.format(available)}</option>;
+                  })}
+                </select>
+              </Field>
+            )}
+
+            {form.source_type === "manual" && (
+              <Field label="Valor disponível manual">
+                <input type="number" min="0" step="0.01" value={form.manual_source_amount} onChange={(event) => update("manual_source_amount", event.target.value)} className="input" placeholder="0,00" />
+              </Field>
+            )}
+
+            <Field label="Para onde vai">
+              <select value={form.target_type} onChange={(event) => update("target_type", event.target.value)} className="input">
+                <option value="transaction">Despesa / lançamento</option>
+                <option value="card">Cartão</option>
+                <option value="goal">Meta</option>
+                <option value="manual">Destino manual</option>
+              </select>
+            </Field>
+
+            {form.target_type === "transaction" && (
+              <Field label="Despesa">
+                <select value={form.target_transaction_id} onChange={(event) => update("target_transaction_id", event.target.value)} className="input">
+                  <option value="">Selecione uma despesa</option>
+                  {expenseTargets.map((item) => <option key={item.id} value={item.id}>{item.description} — falta {money.format(item.remaining)}</option>)}
+                </select>
+              </Field>
+            )}
+
+            {form.target_type === "card" && (
+              <Field label="Cartão">
+                <select value={form.target_card_id} onChange={(event) => update("target_card_id", event.target.value)} className="input">
+                  <option value="">Selecione um cartão</option>
+                  {cardUsage.map((card) => <option key={card.id} value={card.id}>{card.name} — em aberto {money.format(card.spent)}</option>)}
+                </select>
+              </Field>
+            )}
+
+            {form.target_type === "goal" && (
+              <Field label="Meta">
+                <select value={form.target_goal_id} onChange={(event) => update("target_goal_id", event.target.value)} className="input">
+                  <option value="">Selecione uma meta</option>
+                  {goals.map((goal) => <option key={goal.id} value={goal.id}>{goal.title} — falta {money.format(Math.max(0, Number(goal.target_amount || 0) - Number(goal.current_amount || 0)))}</option>)}
+                </select>
+              </Field>
+            )}
+
+            {form.target_type === "manual" && (
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Nome do destino"><input value={form.manual_target_label} onChange={(event) => update("manual_target_label", event.target.value)} className="input" placeholder="Ex.: Conta pessoal" /></Field>
+                <Field label="Valor do destino"><input type="number" min="0" step="0.01" value={form.manual_target_amount} onChange={(event) => update("manual_target_amount", event.target.value)} className="input" placeholder="0,00" /></Field>
+              </div>
+            )}
+
+            <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+              <Field label="Valor a usar"><input type="number" min="0" step="0.01" value={form.amount} onChange={(event) => update("amount", event.target.value)} className="input" placeholder="0,00" /></Field>
+              <button type="button" onClick={fillSuggestedAmount} className="outline-button self-end rounded-2xl px-4 py-3 text-sm font-black">Usar necessário</button>
+            </div>
+
+            <Field label="Data do pagamento"><DateInput value={form.payment_date} onChange={(value) => update("payment_date", value)} /></Field>
+            <Field label="Observação"><textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} className="input min-h-20" placeholder="Opcional" /></Field>
+
+            <div className="rounded-[1.5rem] border border-emerald-500/20 bg-emerald-500/10 p-4">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div><p className="muted-text text-xs font-black">Disponível</p><strong>{money.format(selectedSource.available || 0)}</strong></div>
+                <div><p className="muted-text text-xs font-black">Falta pagar</p><strong>{money.format(selectedTarget.remaining || 0)}</strong></div>
+                <div><p className="muted-text text-xs font-black">Após pagamento</p><strong>{money.format(targetAfter)}</strong></div>
+              </div>
+              <p className="mt-3 text-sm font-bold text-emerald-400">{canPayAll ? "Você consegue quitar esse destino." : resultLabel}</p>
+            </div>
+
+            <button disabled={!amount || amount <= 0 || amount > selectedSource.available || amount > selectedTarget.remaining} className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-3 font-black text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">
+              <Plus size={18} /> Registrar pagamento
+            </button>
+          </form>
+        </section>
+
+        <section className="grid gap-6">
+          <section className="surface-card rounded-[2rem] p-5 shadow-sm">
+            <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-xl font-black">Despesas e destinos pendentes</h2>
+                <p className="muted-text text-sm">Acompanhe o que já foi pago, parcial ou ainda pendente.</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => onOpenTransactions({ types: ["expense"] })} className="ghost-button rounded-xl px-3 py-2 text-sm font-bold">Ver lançamentos</button>
+                <button onClick={onOpenCards} className="ghost-button rounded-xl px-3 py-2 text-sm font-bold">Ver cartões</button>
+                <button onClick={onOpenGoals} className="ghost-button rounded-xl px-3 py-2 text-sm font-bold">Ver metas</button>
+              </div>
+            </div>
+
+            <div className="max-h-[520px] space-y-3 overflow-y-auto pr-2">
+              {expenseTargets.length ? expenseTargets.map((item) => {
+                const percent = item.amount > 0 ? Math.min(100, Math.round((item.paid / item.amount) * 100)) : 0;
+                return (
+                  <article key={item.id} className="transaction-row rounded-2xl p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <h3 className="font-black">{item.description}</h3>
+                        <p className="muted-text text-sm">{item.category} · {formatDateBR(item.date)}{item.cardName ? ` · ${item.cardName}` : ""}</p>
+                      </div>
+                      <div className="text-right">
+                        <strong className={item.remaining <= 0 ? "text-emerald-400" : item.paid > 0 ? "text-amber-400" : "text-rose-400"}>{item.remaining <= 0 ? "Pago" : item.paid > 0 ? "Parcial" : "Pendente"}</strong>
+                        <p className="muted-text text-sm">Falta {money.format(item.remaining)}</p>
+                      </div>
+                    </div>
+                    <ProgressBar value={item.paid} max={item.amount || 1} danger={false} />
+                    <p className="muted-text mt-2 text-xs font-bold">{percent}% pago · {money.format(item.paid)} de {money.format(item.amount)}</p>
+                  </article>
+                );
+              }) : <EmptyState text="Nenhuma despesa encontrada neste mês." />}
+            </div>
+          </section>
+
+          <section className="surface-card rounded-[2rem] p-5 shadow-sm">
+            <h2 className="text-xl font-black">Histórico de pagamentos</h2>
+            <p className="muted-text mb-4 text-sm">Registros feitos em {monthLabel(selectedMonth)}.</p>
+            <div className="max-h-[420px] space-y-3 overflow-y-auto pr-2">
+              {monthAllocations.length ? monthAllocations.map((item) => (
+                <article key={item.id} className="transaction-row flex flex-col gap-3 rounded-2xl p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="font-black">{allocationTargetLabel(item)}</h3>
+                    <p className="muted-text text-sm">Origem: {allocationSourceLabel(item)} · {formatDateBR(item.payment_date)}</p>
+                    {item.notes && <p className="muted-text mt-1 text-xs">{item.notes}</p>}
+                  </div>
+                  <div className="flex items-center justify-between gap-3 sm:justify-end">
+                    <strong className="text-emerald-400">{money.format(item.amount)}</strong>
+                    <button onClick={() => onDelete(item.id)} className="icon-button rounded-xl p-2 hover:text-rose-500" title="Excluir pagamento"><Trash2 size={17} /></button>
+                  </div>
+                </article>
+              )) : <EmptyState text="Nenhum pagamento registrado neste mês." />}
+            </div>
+          </section>
+        </section>
+      </section>
+    </main>
+  );
+}
+
+function MobileQuickShortcuts({ onExpense, onIncome, onPayment, onCards }) {
+  return (
+    <section className="mobile-quick-shortcuts" aria-label="Atalhos rápidos">
+      <button type="button" onClick={onExpense}>
+        <ArrowDownCircle size={16} />
+        <span>Despesa</span>
+      </button>
+      <button type="button" onClick={onIncome}>
+        <ArrowUpCircle size={16} />
+        <span>Receita</span>
+      </button>
+      <button type="button" onClick={onPayment}>
+        <CheckCircle2 size={16} />
+        <span>Pagar</span>
+      </button>
+      <button type="button" onClick={onCards}>
+        <CreditCard size={16} />
+        <span>Cartão</span>
+      </button>
+    </section>
+  );
+}
+
+function MobileQuickActionFab({ open, setOpen, onAction, page = "dashboard" }) {
+  const actionSets = {
+    dashboard: [
+      { key: "expense", label: "Nova despesa", icon: <ArrowDownCircle size={18} /> },
+      { key: "income", label: "Nova receita", icon: <ArrowUpCircle size={18} /> },
+      { key: "payment", label: "Pagamento", icon: <CheckCircle2 size={18} /> },
+      { key: "card", label: "Cartão", icon: <CreditCard size={18} /> },
+    ],
+    transactions: [
+      { key: "expense", label: "Despesa", icon: <ArrowDownCircle size={18} /> },
+      { key: "income", label: "Receita", icon: <ArrowUpCircle size={18} /> },
+      { key: "repeat", label: "Igual anterior", icon: <Repeat size={18} /> },
+      { key: "payment", label: "Pagar", icon: <CheckCircle2 size={18} /> },
+    ],
+    cards: [
+      { key: "installment", label: "Parcelada", icon: <CreditCard size={18} /> },
+      { key: "card-payment", label: "Pagar cartão", icon: <CheckCircle2 size={18} /> },
+      { key: "expense", label: "Despesa", icon: <ArrowDownCircle size={18} /> },
+      { key: "payment", label: "Pagamento", icon: <Wallet size={18} /> },
+    ],
+    payments: [
+      { key: "payment", label: "Novo pagamento", icon: <CheckCircle2 size={18} /> },
+      { key: "expense", label: "Nova despesa", icon: <ArrowDownCircle size={18} /> },
+      { key: "income", label: "Nova receita", icon: <ArrowUpCircle size={18} /> },
+      { key: "card", label: "Cartões", icon: <CreditCard size={18} /> },
+    ],
+    recurring: [
+      { key: "recurring", label: "Novo fixo", icon: <Repeat size={18} /> },
+      { key: "expense", label: "Despesa", icon: <ArrowDownCircle size={18} /> },
+      { key: "income", label: "Receita", icon: <ArrowUpCircle size={18} /> },
+      { key: "payment", label: "Pagamento", icon: <CheckCircle2 size={18} /> },
+    ],
+    goals: [
+      { key: "goal", label: "Nova meta", icon: <Target size={18} /> },
+      { key: "income", label: "Receita", icon: <ArrowUpCircle size={18} /> },
+      { key: "payment", label: "Pagamento", icon: <CheckCircle2 size={18} /> },
+      { key: "expense", label: "Despesa", icon: <ArrowDownCircle size={18} /> },
+    ],
+  };
+
+  const actions = actionSets[page] || actionSets.dashboard;
+  const titleByPage = {
+    dashboard: "Ação rápida",
+    transactions: "Lançar agora",
+    cards: "Ações do cartão",
+    payments: "Novo pagamento",
+    recurring: "Fixos e recorrências",
+    goals: "Metas financeiras",
+  };
+
+  return (
+    <>
+      {open && <button type="button" className="mobile-action-dim" onClick={() => setOpen(false)} aria-label="Fechar ações rápidas" />}
+
+      {open && (
+        <div className="mobile-action-sheet" role="dialog" aria-label="Ações rápidas">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <strong className="block text-sm font-black">{titleByPage[page] || "Ação rápida"}</strong>
+              <span className="muted-text text-xs font-semibold">Atalhos adaptados à tela atual.</span>
+            </div>
+            <button type="button" onClick={() => setOpen(false)} className="ghost-button rounded-xl p-2" aria-label="Fechar">
+              <X size={16} />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            {actions.map((action) => (
+              <button key={action.key} type="button" onClick={() => onAction(action.key)} className="mobile-action-option">
+                {action.icon}
+                <span>{action.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className={classNames("mobile-fab-button", open && "mobile-fab-open")}
+        aria-label={open ? "Fechar ações rápidas" : "Abrir ações rápidas"}
+      >
+        {open ? <X size={24} /> : <Plus size={25} />}
+      </button>
+    </>
+  );
+}
+
+function MobileBottomNav({ tabs, page, setPage }) {
+  const [moreOpen, setMoreOpen] = useState(false);
+  const mainKeys = ["dashboard", "transactions", "cards", "payments"];
+  const mainTabs = tabs.filter((tab) => mainKeys.includes(tab.key));
+  const moreTabs = tabs.filter((tab) => !mainKeys.includes(tab.key));
+  const isMoreActive = moreTabs.some((tab) => tab.key === page);
+
+  function openPage(key) {
+    setMoreOpen(false);
+    setPage(key);
+  }
+
+  return (
+    <>
+      {moreOpen && <button type="button" className="mobile-nav-dim" onClick={() => setMoreOpen(false)} aria-label="Fechar menu" />}
+
+      {moreOpen && (
+        <div className="mobile-more-sheet" role="dialog" aria-label="Mais opções do menu">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <strong className="text-sm font-black">Mais áreas</strong>
+            <button type="button" onClick={() => setMoreOpen(false)} className="ghost-button rounded-xl p-2" aria-label="Fechar menu">
+              <X size={16} />
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {moreTabs.map((tab) => (
+              <button key={tab.key} type="button" onClick={() => openPage(tab.key)} className={classNames("mobile-more-button", page === tab.key && "mobile-more-active")}>
+                {tab.icon}
+                <span>{tab.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <nav className="mobile-bottom-nav" aria-label="Menu rápido mobile">
+        {mainTabs.map((tab) => {
+          const mobileLabel = tab.key === "transactions" ? "Lançar" : tab.label;
+          const mobileIcon = tab.key === "transactions" ? <Plus size={17} /> : tab.icon;
+
+          return (
+            <button key={tab.key} onClick={() => openPage(tab.key)} className={classNames("mobile-bottom-button", page === tab.key && "mobile-bottom-active")}>
+              {mobileIcon}
+              <span>{mobileLabel}</span>
+            </button>
+          );
+        })}
+
+        <button type="button" onClick={() => setMoreOpen((value) => !value)} className={classNames("mobile-bottom-button", isMoreActive && "mobile-bottom-active")}>
+          <ListFilter size={17} />
+          <span>Mais</span>
         </button>
-      ))}
-    </nav>
+      </nav>
+    </>
   );
 }
 
@@ -4270,17 +5769,52 @@ function FinancialHealthCard({ healthStatus, summary, setPage }) {
   );
 }
 
-function DashboardOverview({ summary, expenseByCategory, dailyFlow, monthlyComparison, topExpenses, goals, selectedMonth, setPage, insights, cardUsage, healthStatus, onOpenTransactions, onSelectMonth }) {
+function DashboardOverview({ summary, expenseByCategory, dailyFlow, monthlyComparison, topExpenses, goals, selectedMonth, setPage, insights, notifications = [], cardUsage, healthStatus, onOpenTransactions, onSelectMonth }) {
   const topExpense = expenseByCategory[0];
   const nextGoal = goals[0];
+  const highlightedCard = [...(cardUsage || [])].sort((a, b) => Number(b.percent || 0) - Number(a.percent || 0))[0];
+  const currentMonthComparison = monthlyComparison.find((item) => item.month === selectedMonth) || monthlyComparison[monthlyComparison.length - 1];
+  const previousMonthComparison = monthlyComparison.length >= 2
+    ? monthlyComparison[monthlyComparison.length - 2]
+    : null;
+  const expenseChangePercent = previousMonthComparison?.expense > 0 && currentMonthComparison
+    ? Math.round(((Number(currentMonthComparison.expense || 0) - Number(previousMonthComparison.expense || 0)) / Number(previousMonthComparison.expense || 1)) * 100)
+    : null;
+  const daysWithMovement = dailyFlow.filter((item) => Number(item.income || 0) > 0 || Number(item.expense || 0) > 0);
+  const timelineDays = [...daysWithMovement].sort((a, b) => Number(b.day) - Number(a.day)).slice(0, 5).reverse();
+  const [monthlySummaryOpen, setMonthlySummaryOpen] = useState(false);
+  const monthlySummaryData = useMemo(
+    () =>
+      buildMonthlySummaryData({
+        summary,
+        selectedMonth,
+        expenseByCategory,
+        monthlyComparison,
+        topExpenses,
+        notifications,
+        cardUsage,
+      }),
+    [summary, selectedMonth, expenseByCategory, monthlyComparison, topExpenses, notifications, cardUsage]
+  );
 
   function openDay(day) {
     onOpenTransactions?.({ date: `${selectedMonth}-${String(day).padStart(2, "0")}` });
   }
 
   return (
-    <main className="grid gap-6">
-      <FinancialHealthCard healthStatus={healthStatus} summary={summary} setPage={setPage} />
+    <main className="dashboard-live mobile-dashboard-flow grid gap-6">
+      <DashboardLiveHero
+        summary={summary}
+        selectedMonth={selectedMonth}
+        healthStatus={healthStatus}
+        notifications={notifications}
+        topExpense={topExpense}
+        nextGoal={nextGoal}
+        highlightedCard={highlightedCard}
+        expenseChangePercent={expenseChangePercent}
+        setPage={setPage}
+        onOpenTransactions={onOpenTransactions}
+      />
 
       <section className="grid gap-4 md:grid-cols-4">
         <MetricCard
@@ -4317,12 +5851,28 @@ function DashboardOverview({ summary, expenseByCategory, dailyFlow, monthlyCompa
         />
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[1fr_1fr]">
+      <MonthlySummaryCard
+        data={monthlySummaryData}
+        onOpen={() => setMonthlySummaryOpen(true)}
+        onOpenTransactions={onOpenTransactions}
+      />
+
+      <DashboardFocusGrid
+        topExpense={topExpense}
+        nextGoal={nextGoal}
+        highlightedCard={highlightedCard}
+        notifications={notifications}
+        summary={summary}
+        setPage={setPage}
+        onOpenTransactions={onOpenTransactions}
+      />
+
+      <section className="dashboard-secondary-row grid gap-6 xl:grid-cols-[1fr_0.9fr]">
         <InsightsCard insights={insights} />
-        <CardsUsageMini cardUsage={cardUsage} setPage={setPage} />
+        <DashboardTimeline days={timelineDays} selectedMonth={selectedMonth} onOpenDay={openDay} />
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-2">
+      <section className="dashboard-charts-row grid gap-6 xl:grid-cols-2">
         <ChartCard
           title="Gastos por categoria"
           subtitle={topExpense ? `Maior gasto: ${topExpense.name}` : "Sem despesas neste mês"}
@@ -4374,7 +5924,7 @@ function DashboardOverview({ summary, expenseByCategory, dailyFlow, monthlyCompa
         </ChartCard>
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[1.3fr_0.7fr]">
+      <section className="dashboard-comparison-row grid gap-6 xl:grid-cols-[1.3fr_0.7fr]">
         <ChartCard
           title="Comparação mensal"
           subtitle="Últimos meses com movimentação"
@@ -4440,10 +5990,566 @@ function DashboardOverview({ summary, expenseByCategory, dailyFlow, monthlyCompa
           <ProgressBar value={nextGoal.current_amount} max={nextGoal.target_amount} />
         </section>
       )}
+
+      <MonthlySummaryModal
+        open={monthlySummaryOpen}
+        data={monthlySummaryData}
+        onClose={() => setMonthlySummaryOpen(false)}
+        onOpenTransactions={onOpenTransactions}
+        setPage={setPage}
+      />
     </main>
   );
 }
 
+function getMonthlySummaryTone(data) {
+  if (!data?.hasData) return "blue";
+  if (data.balance < 0) return "rose";
+  if (data.savingRate >= 25) return "emerald";
+  if (data.savingRate >= 10) return "blue";
+  return "amber";
+}
+
+function buildMonthlySummaryData({ summary, selectedMonth, expenseByCategory = [], monthlyComparison = [], topExpenses = [], notifications = [], cardUsage = [] }) {
+  const income = Number(summary?.income || 0);
+  const expense = Number(summary?.expense || 0);
+  const balance = Number(summary?.balance || 0);
+  const savingRate = Number(summary?.savingRate || 0);
+  const hasData = income > 0 || expense > 0;
+  const currentIndex = monthlyComparison.findIndex((item) => item.month === selectedMonth);
+  const previous = currentIndex > 0 ? monthlyComparison[currentIndex - 1] : null;
+  const topCategory = expenseByCategory[0];
+  const highlightedCard = [...(cardUsage || [])].sort((a, b) => Number(b.percent || 0) - Number(a.percent || 0))[0];
+  const expenseDiff = previous ? expense - Number(previous.expense || 0) : null;
+  const incomeDiff = previous ? income - Number(previous.income || 0) : null;
+  const balanceDiff = previous ? balance - Number(previous.balance || 0) : null;
+  const expenseChangePercent = previous && Number(previous.expense || 0) > 0
+    ? Math.round((expenseDiff / Number(previous.expense || 1)) * 100)
+    : null;
+
+  let title = "Vamos montar o resumo do mês";
+  let message = "Cadastre receitas e despesas para o sistema gerar uma leitura mais completa do seu mês.";
+  let shortMessage = "Sem dados suficientes ainda.";
+  let tip = "Comece cadastrando sua renda principal e os gastos fixos. Assim o resumo fica mais preciso.";
+
+  if (hasData && balance < 0) {
+    title = "Mês em atenção";
+    message = `As despesas passaram das receitas em ${money.format(Math.abs(balance))}. Vale revisar os maiores gastos e próximos vencimentos.`;
+    shortMessage = `Saldo negativo de ${money.format(Math.abs(balance))}.`;
+    tip = topCategory
+      ? `Comece revisando ${topCategory.name}, que concentra ${money.format(topCategory.value)} em despesas no mês.`
+      : "Priorize gastos essenciais e evite novas despesas até o saldo voltar ao positivo.";
+  } else if (hasData && savingRate >= 25) {
+    title = "Mês evoluindo bem";
+    message = `Seu saldo está positivo e você economizou ${savingRate}% das receitas do mês.`;
+    shortMessage = `Economia de ${savingRate}% no mês.`;
+    tip = "Bom momento para direcionar parte do saldo para uma meta ou reserva financeira.";
+  } else if (hasData && savingRate >= 10) {
+    title = "Mês controlado";
+    message = `Você está com saldo positivo de ${money.format(balance)}. Acompanhe os gastos variáveis para manter o ritmo.`;
+    shortMessage = `Saldo positivo de ${money.format(balance)}.`;
+    tip = topCategory
+      ? `Acompanhe ${topCategory.name}, pois essa é a categoria que mais pesa no mês.`
+      : "Mantenha os lançamentos atualizados para preservar a visão do mês.";
+  } else if (hasData) {
+    title = "Mês no limite";
+    message = `O mês está positivo, mas a sobra está baixa: ${money.format(balance)}.`;
+    shortMessage = `Sobra baixa: ${money.format(balance)}.`;
+    tip = "Revise pequenos gastos recorrentes e compras por impulso antes do fechamento do mês.";
+  }
+
+  if (highlightedCard && Number(highlightedCard.percent || 0) >= 75) {
+    tip = `Fique de olho no ${highlightedCard.name}: ele já está com ${highlightedCard.percent}% do limite em uso.`;
+  }
+
+  return {
+    selectedMonth,
+    monthName: monthLabel(selectedMonth),
+    hasData,
+    income,
+    expense,
+    balance,
+    savingRate,
+    title,
+    message,
+    shortMessage,
+    tip,
+    topCategory,
+    topCategories: expenseByCategory.slice(0, 3),
+    topExpenses: topExpenses.slice(0, 3),
+    highlightedCard,
+    notificationsCount: Array.isArray(notifications) ? notifications.length : 0,
+    previous,
+    expenseDiff,
+    incomeDiff,
+    balanceDiff,
+    expenseChangePercent,
+    tone: getMonthlySummaryTone({ hasData, balance, savingRate }),
+  };
+}
+
+function MonthlySummaryCard({ data, onOpen, onOpenTransactions }) {
+  const tone = data?.tone || "blue";
+  const toneClasses = {
+    emerald: "border-emerald-500/20 bg-emerald-500/10 text-emerald-400",
+    blue: "border-blue-500/20 bg-blue-500/10 text-blue-400",
+    amber: "border-amber-500/20 bg-amber-500/10 text-amber-400",
+    rose: "border-rose-500/20 bg-rose-500/10 text-rose-400",
+  };
+
+  return (
+    <section className="monthly-summary-card surface-card rounded-[2rem] p-5 shadow-sm">
+      <div className="grid gap-5 xl:grid-cols-[1fr_auto] xl:items-center">
+        <button type="button" onClick={onOpen} className="interactive-row flex w-full flex-col gap-4 rounded-[1.5rem] p-4 text-left transition sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-4">
+            <div className={classNames("flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border", toneClasses[tone])}>
+              <CalendarRange size={22} />
+            </div>
+            <div>
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <span className={classNames("rounded-full border px-3 py-1 text-xs font-black", toneClasses[tone])}>Resumo do mês</span>
+                <span className="muted-text text-xs font-black uppercase tracking-[0.12em]">{data.monthName}</span>
+              </div>
+              <h2 className="text-xl font-black leading-tight">{data.title}</h2>
+              <p className="muted-text mt-2 max-w-2xl text-sm font-semibold leading-6">{data.shortMessage}</p>
+            </div>
+          </div>
+          <span className="outline-button rounded-2xl px-4 py-2 text-sm font-black">Ver resumo completo</span>
+        </button>
+
+        <div className="grid gap-3 sm:grid-cols-3 xl:min-w-[420px]">
+          <SummaryMiniCard title="Receitas" value={money.format(data.income)} tone="emerald" helper="entradas" />
+          <SummaryMiniCard title="Despesas" value={money.format(data.expense)} tone="rose" helper={data.topCategory ? data.topCategory.name : "saídas"} />
+          <SummaryMiniCard title="Saldo" value={money.format(data.balance)} tone={data.balance >= 0 ? "blue" : "rose"} helper={`${data.savingRate}% economia`} />
+        </div>
+      </div>
+
+      {data.topCategory && (
+        <button type="button" onClick={() => onOpenTransactions?.({ categories: [data.topCategory.name], types: ["expense"] })} className="transaction-row interactive-row mt-4 flex w-full items-center justify-between gap-3 rounded-2xl p-3 text-left">
+          <div>
+            <strong className="text-sm">Categoria em destaque: {data.topCategory.name}</strong>
+            <p className="muted-text mt-1 text-xs font-semibold">Clique para ver os lançamentos dessa categoria.</p>
+          </div>
+          <strong className="text-rose-500">{money.format(data.topCategory.value)}</strong>
+        </button>
+      )}
+    </section>
+  );
+}
+
+function MonthlySummaryModal({ open, data, onClose, onOpenTransactions, setPage }) {
+  if (!open || !data) return null;
+
+  return (
+    <div className="monthly-summary-backdrop alert-detail-backdrop fixed inset-0 z-[90] flex items-start justify-center px-4 py-6 sm:py-10" onClick={onClose} role="dialog" aria-modal="true" aria-label="Resumo do mês">
+      <div className="monthly-summary-modal surface-card flex max-h-[calc(100dvh-2rem)] w-full max-w-4xl flex-col overflow-hidden rounded-[2rem] shadow-2xl" onClick={(event) => event.stopPropagation()}>
+        <div className="edit-modal-hero edit-modal-hero-emerald relative overflow-hidden p-6 sm:p-7">
+          <div className="edit-modal-glow edit-modal-glow-one" />
+          <div className="edit-modal-glow edit-modal-glow-two" />
+          <div className="relative z-10 flex items-start justify-between gap-4">
+            <div>
+              <span className="mb-3 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-black uppercase tracking-[0.12em] text-emerald-100">Resumo do mês · {data.monthName}</span>
+              <h2 className="text-3xl font-black leading-tight">{data.title}</h2>
+              <p className="mt-3 max-w-2xl text-sm font-semibold leading-7 text-slate-200">{data.message}</p>
+            </div>
+            <button type="button" onClick={onClose} className="edit-modal-close inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl" aria-label="Fechar resumo do mês" title="Fechar">
+              <X size={20} />
+            </button>
+          </div>
+        </div>
+
+        <div className="edit-modal-content flex-1 overflow-y-auto px-6 py-5 sm:px-7 sm:py-6">
+          <div className="grid gap-3 sm:grid-cols-4">
+            <MonthlySummaryStat label="Receitas" value={money.format(data.income)} tone="emerald" />
+            <MonthlySummaryStat label="Despesas" value={money.format(data.expense)} tone="rose" />
+            <MonthlySummaryStat label="Saldo" value={money.format(data.balance)} tone={data.balance >= 0 ? "blue" : "rose"} />
+            <MonthlySummaryStat label="Economia" value={`${data.savingRate}%`} tone="amber" />
+          </div>
+
+          <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_0.9fr]">
+            <section className="field-shell rounded-[1.5rem] p-4">
+              <h3 className="text-lg font-black">Comparação com o mês anterior</h3>
+              <p className="muted-text mt-1 text-sm font-semibold">Entenda se o mês melhorou, piorou ou ficou estável.</p>
+              <div className="mt-4 grid gap-2">
+                {data.previous ? (
+                  <>
+                    <MonthlySummaryComparisonRow label="Receitas" diff={data.incomeDiff} positiveWhenHigher />
+                    <MonthlySummaryComparisonRow label="Despesas" diff={data.expenseDiff} positiveWhenHigher={false} percent={data.expenseChangePercent} />
+                    <MonthlySummaryComparisonRow label="Saldo" diff={data.balanceDiff} positiveWhenHigher />
+                  </>
+                ) : (
+                  <EmptyState text="Ainda não há mês anterior suficiente para comparar." />
+                )}
+              </div>
+            </section>
+
+            <section className="field-shell rounded-[1.5rem] p-4">
+              <h3 className="text-lg font-black">Dica prática</h3>
+              <p className="muted-text mt-2 text-sm font-semibold leading-6">{data.tip}</p>
+              <div className="mt-4 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm font-bold text-emerald-300">
+                {data.notificationsCount > 0
+                  ? `${data.notificationsCount} alerta(s) ativo(s) também podem ajudar a entender o mês.`
+                  : "Nenhum alerta crítico ativo neste momento."}
+              </div>
+            </section>
+          </div>
+
+          <div className="mt-5 grid gap-4 lg:grid-cols-2">
+            <section className="field-shell rounded-[1.5rem] p-4">
+              <h3 className="text-lg font-black">Onde você mais gastou</h3>
+              <div className="mt-4 space-y-3">
+                {data.topCategories.length ? (
+                  data.topCategories.map((item, index) => (
+                    <button key={item.name} type="button" onClick={() => onOpenTransactions?.({ categories: [item.name], types: ["expense"] })} className="transaction-row interactive-row flex w-full items-center justify-between rounded-2xl p-3 text-left">
+                      <div>
+                        <strong>{index + 1}. {item.name}</strong>
+                        <p className="muted-text text-xs font-semibold">Categoria de despesa</p>
+                      </div>
+                      <strong className="text-rose-500">{money.format(item.value)}</strong>
+                    </button>
+                  ))
+                ) : (
+                  <EmptyState text="Sem despesas categorizadas neste mês." />
+                )}
+              </div>
+            </section>
+
+            <section className="field-shell rounded-[1.5rem] p-4">
+              <h3 className="text-lg font-black">Maiores lançamentos</h3>
+              <div className="mt-4 space-y-3">
+                {data.topExpenses.length ? (
+                  data.topExpenses.map((item, index) => (
+                    <button key={item.id} type="button" onClick={() => onOpenTransactions?.({ search: item.description, categories: [item.category], types: ["expense"] })} className="transaction-row interactive-row flex w-full items-center justify-between rounded-2xl p-3 text-left">
+                      <div>
+                        <strong>{index + 1}. {item.description}</strong>
+                        <p className="muted-text text-xs font-semibold">{item.category} · {formatDateBR(item.date)}</p>
+                      </div>
+                      <strong className="text-rose-500">{money.format(item.amount)}</strong>
+                    </button>
+                  ))
+                ) : (
+                  <EmptyState text="Nenhuma despesa cadastrada neste mês." />
+                )}
+              </div>
+            </section>
+          </div>
+
+          {data.highlightedCard && (
+            <section className="field-shell mt-5 rounded-[1.5rem] p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="text-lg font-black">Cartão em destaque</h3>
+                  <p className="muted-text mt-1 text-sm font-semibold">{data.highlightedCard.name} está com {data.highlightedCard.percent}% do limite em uso.</p>
+                </div>
+                <button type="button" onClick={() => { onClose(); setPage("cards"); }} className="outline-button rounded-2xl px-4 py-2 text-sm font-black">Abrir cartões</button>
+              </div>
+            </section>
+          )}
+        </div>
+
+        <div className="edit-modal-footer flex shrink-0 flex-col-reverse gap-3 border-t px-6 py-4 sm:flex-row sm:items-center sm:justify-end sm:px-7 sm:py-5">
+          <button type="button" onClick={onClose} className="outline-button rounded-2xl px-5 py-3 text-sm font-black">Fechar</button>
+          <button type="button" onClick={() => { onClose(); setPage("reports"); }} className="outline-button rounded-2xl px-5 py-3 text-sm font-black">Ver relatórios</button>
+          <button type="button" onClick={() => { onClose(); onOpenTransactions?.({}); }} className="rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-black text-white transition hover:bg-emerald-700">Ver lançamentos</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MonthlySummaryStat({ label, value, tone }) {
+  const toneClasses = {
+    emerald: "bg-emerald-500/10 text-emerald-400",
+    rose: "bg-rose-500/10 text-rose-400",
+    blue: "bg-blue-500/10 text-blue-400",
+    amber: "bg-amber-500/10 text-amber-400",
+  };
+
+  return (
+    <div className={classNames("rounded-2xl p-4", toneClasses[tone] || toneClasses.blue)}>
+      <p className="text-xs font-black uppercase tracking-[0.12em] opacity-80">{label}</p>
+      <strong className="mt-2 block text-lg font-black sm:text-xl">{value}</strong>
+    </div>
+  );
+}
+
+function MonthlySummaryComparisonRow({ label, diff, positiveWhenHigher, percent }) {
+  const value = Number(diff || 0);
+  const isNeutral = Math.abs(value) < 0.01;
+  const isPositive = isNeutral ? true : positiveWhenHigher ? value >= 0 : value <= 0;
+  const suffix = typeof percent === "number" && Number.isFinite(percent) ? ` (${percent > 0 ? "+" : ""}${percent}%)` : "";
+
+  return (
+    <div className="transaction-row flex items-center justify-between gap-3 rounded-2xl p-3">
+      <span className="font-bold">{label}</span>
+      <strong className={classNames(isNeutral ? "muted-text" : isPositive ? "text-emerald-500" : "text-rose-500")}>
+        {isNeutral ? "Sem mudança" : `${value > 0 ? "+" : ""}${money.format(value)}${suffix}`}
+      </strong>
+    </div>
+  );
+}
+
+function getDashboardTone(summary, healthStatus) {
+  if (!summary.income && !summary.expense) {
+    return {
+      label: "Vamos começar seu mês",
+      text: "Cadastre uma receita ou despesa para o painel ganhar vida com seus dados reais.",
+      tone: "blue",
+      icon: <Plus size={20} />,
+    };
+  }
+
+  if (summary.balance < 0) {
+    return {
+      label: "Mês em atenção",
+      text: "As despesas passaram das receitas. Priorize revisar os maiores gastos e próximos vencimentos.",
+      tone: "rose",
+      icon: <Bell size={20} />,
+    };
+  }
+
+  if (Number(summary.savingRate || 0) >= 25) {
+    return {
+      label: "Mês evoluindo bem",
+      text: "Seu saldo está positivo e a economia está saudável. Bom momento para reforçar metas.",
+      tone: "emerald",
+      icon: <TrendingUp size={20} />,
+    };
+  }
+
+  if (Number(summary.savingRate || 0) >= 10) {
+    return {
+      label: "Mês controlado",
+      text: "O mês está positivo. Acompanhe os gastos variáveis para manter o ritmo até o fechamento.",
+      tone: "blue",
+      icon: <CheckCircle2 size={20} />,
+    };
+  }
+
+  return {
+    label: healthStatus?.label ? `Saúde financeira: ${healthStatus.label}` : "Mês em acompanhamento",
+    text: "Seu painel já tem dados suficientes para acompanhar saldo, categorias e cartões com mais clareza.",
+    tone: healthStatus?.tone || "amber",
+    icon: <BarChart3 size={20} />,
+  };
+}
+
+function DashboardLiveHero({ summary, selectedMonth, healthStatus, notifications, topExpense, nextGoal, highlightedCard, expenseChangePercent, setPage, onOpenTransactions }) {
+  const dashboardTone = getDashboardTone(summary, healthStatus);
+  const incomeUsedPercent = summary.income > 0 ? Math.min(100, Math.round((summary.expense / summary.income) * 100)) : 0;
+  const alertsCount = Array.isArray(notifications) ? notifications.length : 0;
+  const goalPercent = nextGoal?.target_amount > 0 ? Math.min(100, Math.round((Number(nextGoal.current_amount || 0) / Number(nextGoal.target_amount || 1)) * 100)) : 0;
+
+  return (
+    <section className={classNames("dashboard-live-hero rounded-[2.2rem] p-5 shadow-sm", `dashboard-live-${dashboardTone.tone}`)}>
+      <div className="dashboard-live-orb dashboard-live-orb-one" />
+      <div className="dashboard-live-orb dashboard-live-orb-two" />
+
+      <div className="relative z-10 grid gap-6 xl:grid-cols-[1.1fr_0.9fr] xl:items-stretch">
+        <div className="flex flex-col justify-between gap-6">
+          <div>
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <span className="dashboard-live-pill inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-black uppercase tracking-[0.12em]">
+                {dashboardTone.icon}
+                Painel vivo
+              </span>
+              <span className="dashboard-live-pill-soft rounded-full px-3 py-1 text-xs font-black">
+                {monthLabel(selectedMonth)}
+              </span>
+            </div>
+
+            <h2 className="max-w-3xl text-3xl font-black leading-tight tracking-tight md:text-4xl">
+              {dashboardTone.label}
+            </h2>
+            <p className="mt-3 max-w-2xl text-sm font-semibold leading-7 opacity-85 md:text-base">
+              {dashboardTone.text}
+            </p>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <LiveHeroStat label="Renda usada" value={`${incomeUsedPercent}%`} helper="despesas x receitas" />
+            <LiveHeroStat label="Alertas" value={String(alertsCount)} helper={alertsCount ? "pontos para revisar" : "nada crítico agora"} />
+            <LiveHeroStat label="Meta" value={nextGoal ? `${goalPercent}%` : "—"} helper={nextGoal ? nextGoal.title : "crie sua primeira meta"} />
+          </div>
+
+          <div className="flex flex-wrap gap-3">
+            <button type="button" onClick={() => setPage("transactions")} className="dashboard-live-action rounded-2xl px-4 py-3 text-sm font-black">
+              <Plus size={17} /> Novo lançamento
+            </button>
+            <button type="button" onClick={() => setPage("payments")} className="dashboard-live-action dashboard-live-action-soft rounded-2xl px-4 py-3 text-sm font-black">
+              <Wallet size={17} /> Registrar pagamento
+            </button>
+            <button type="button" onClick={() => setPage("reports")} className="dashboard-live-action dashboard-live-action-soft rounded-2xl px-4 py-3 text-sm font-black">
+              <FileText size={17} /> Ver relatórios
+            </button>
+          </div>
+        </div>
+
+        <div className="dashboard-radar-card rounded-[1.8rem] p-4">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-lg font-black">Radar do mês</h3>
+              <p className="text-sm opacity-75">Resumo rápido do que merece atenção.</p>
+            </div>
+            <div className="dashboard-radar-icon rounded-2xl p-3">
+              <Bell size={20} />
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <DashboardRadarItem
+              icon={<ArrowDownCircle size={18} />}
+              title={topExpense ? `Maior categoria: ${topExpense.name}` : "Sem categoria principal"}
+              text={topExpense ? `${money.format(topExpense.value)} em despesas neste mês.` : "Cadastre despesas para o radar identificar padrões."}
+              onClick={() => topExpense && onOpenTransactions?.({ categories: [topExpense.name], types: ["expense"] })}
+            />
+            <DashboardRadarItem
+              icon={<TrendingUp size={18} />}
+              title="Variação de gastos"
+              text={expenseChangePercent === null ? "Ainda não há mês anterior suficiente para comparar." : expenseChangePercent > 0 ? `Despesas subiram ${expenseChangePercent}% contra o mês anterior.` : `Despesas caíram ${Math.abs(expenseChangePercent)}% contra o mês anterior.`}
+              positive={expenseChangePercent !== null && expenseChangePercent <= 0}
+            />
+            <DashboardRadarItem
+              icon={<CreditCard size={18} />}
+              title={highlightedCard ? `Cartão: ${highlightedCard.name}` : "Cartões"}
+              text={highlightedCard ? `${highlightedCard.percent}% do limite em uso.` : "Cadastre um cartão para acompanhar faturas e parcelamentos."}
+              onClick={() => setPage("cards")}
+            />
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function LiveHeroStat({ label, value, helper }) {
+  return (
+    <div className="dashboard-live-stat rounded-2xl p-4">
+      <p className="text-xs font-black uppercase tracking-[0.12em] opacity-70">{label}</p>
+      <strong className="mt-2 block text-2xl font-black tracking-tight">{value}</strong>
+      <span className="mt-1 block truncate text-xs font-semibold opacity-75">{helper}</span>
+    </div>
+  );
+}
+
+function DashboardRadarItem({ icon, title, text, positive = false, onClick }) {
+  const Element = onClick ? "button" : "div";
+  return (
+    <Element type={onClick ? "button" : undefined} onClick={onClick} className={classNames("dashboard-radar-item flex w-full items-start gap-3 rounded-2xl p-3 text-left", positive && "dashboard-radar-positive", onClick && "interactive-row")}>
+      <span className="dashboard-radar-item-icon mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl">{icon}</span>
+      <span className="min-w-0">
+        <strong className="block text-sm font-black">{title}</strong>
+        <span className="mt-1 block text-xs font-semibold leading-5 opacity-75">{text}</span>
+      </span>
+    </Element>
+  );
+}
+
+function DashboardFocusGrid({ topExpense, nextGoal, highlightedCard, notifications, summary, setPage, onOpenTransactions }) {
+  const goalPercent = nextGoal?.target_amount > 0 ? Math.min(100, Math.round((Number(nextGoal.current_amount || 0) / Number(nextGoal.target_amount || 1)) * 100)) : 0;
+  const cardPercent = highlightedCard ? Math.min(100, Number(highlightedCard.percent || 0)) : 0;
+  const mainNotification = Array.isArray(notifications) ? notifications[0] : null;
+
+  return (
+    <section className="dashboard-focus-grid grid gap-4 lg:grid-cols-4">
+      <DashboardFocusCard
+        icon={<ArrowDownCircle size={20} />}
+        title="Gasto em foco"
+        value={topExpense ? money.format(topExpense.value) : "Sem dados"}
+        helper={topExpense ? topExpense.name : "Cadastre despesas"}
+        action="Ver categoria"
+        onClick={() => topExpense ? onOpenTransactions?.({ categories: [topExpense.name], types: ["expense"] }) : setPage("transactions")}
+      />
+      <DashboardFocusCard
+        icon={<Target size={20} />}
+        title="Próxima meta"
+        value={nextGoal ? `${goalPercent}%` : "Criar meta"}
+        helper={nextGoal ? nextGoal.title : "Acompanhe objetivos"}
+        progress={nextGoal ? goalPercent : 0}
+        action="Abrir metas"
+        onClick={() => setPage("goals")}
+      />
+      <DashboardFocusCard
+        icon={<CreditCard size={20} />}
+        title="Cartão em destaque"
+        value={highlightedCard ? `${cardPercent}%` : "Sem cartão"}
+        helper={highlightedCard ? highlightedCard.name : "Cadastre cartões"}
+        progress={cardPercent}
+        action="Ver cartões"
+        onClick={() => setPage("cards")}
+      />
+      <DashboardFocusCard
+        icon={<Bell size={20} />}
+        title="Próxima ação"
+        value={mainNotification ? mainNotification.title : summary.balance >= 0 ? "Tudo certo" : "Revisar gastos"}
+        helper={mainNotification ? mainNotification.message : summary.balance >= 0 ? "Nenhum alerta crítico" : "Saldo negativo no mês"}
+        action={mainNotification ? "Ver alertas" : "Ver relatório"}
+        onClick={() => mainNotification ? null : setPage("reports")}
+      />
+    </section>
+  );
+}
+
+function DashboardFocusCard({ icon, title, value, helper, progress, action, onClick }) {
+  return (
+    <button type="button" onClick={onClick} className="dashboard-focus-card surface-card interactive-card rounded-[1.7rem] p-4 text-left shadow-sm">
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <span className="dashboard-focus-icon flex h-11 w-11 items-center justify-center rounded-2xl">{icon}</span>
+        <span className="muted-text text-xs font-black">{action}</span>
+      </div>
+      <p className="muted-text text-xs font-black uppercase tracking-[0.12em]">{title}</p>
+      <strong className="mt-2 block truncate text-xl font-black tracking-tight">{value}</strong>
+      <p className="muted-text mt-1 line-clamp-2 text-xs font-semibold leading-5">{helper}</p>
+      {typeof progress === "number" && (
+        <div className="dashboard-focus-progress mt-4 h-2 overflow-hidden rounded-full">
+          <div className="h-full rounded-full" style={{ width: `${Math.min(100, Math.max(0, progress))}%` }} />
+        </div>
+      )}
+    </button>
+  );
+}
+
+function DashboardTimeline({ days, selectedMonth, onOpenDay }) {
+  return (
+    <section className="surface-card rounded-[2rem] p-5 shadow-sm">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2">
+            <h2 className="text-xl font-black">Últimos movimentos</h2>
+            <InfoPopover title="Últimos movimentos" text="Mostra os dias mais recentes com receitas ou despesas. Clique em um dia para abrir os lançamentos daquele período." />
+          </div>
+          <p className="muted-text text-sm">Movimentação recente em {monthLabel(selectedMonth)}</p>
+        </div>
+        <CalendarDays className="muted-icon" size={22} />
+      </div>
+
+      <div className="space-y-3">
+        {days.length ? (
+          days.map((item) => {
+            const dayBalance = Number(item.income || 0) - Number(item.expense || 0);
+            return (
+              <button key={item.day} type="button" onClick={() => onOpenDay(item.day)} className="dashboard-timeline-row transaction-row interactive-row flex w-full items-center justify-between gap-3 rounded-2xl p-3 text-left">
+                <div className="flex items-center gap-3">
+                  <div className="dashboard-timeline-day flex h-11 w-11 flex-col items-center justify-center rounded-2xl">
+                    <strong>{String(item.day).padStart(2, "0")}</strong>
+                    <span>dia</span>
+                  </div>
+                  <div>
+                    <strong className="text-sm">Receitas {money.format(item.income || 0)}</strong>
+                    <p className="muted-text text-xs">Despesas {money.format(item.expense || 0)}</p>
+                  </div>
+                </div>
+                <strong className={classNames("text-sm", dayBalance >= 0 ? "text-emerald-500" : "text-rose-500")}>{money.format(dayBalance)}</strong>
+              </button>
+            );
+          })
+        ) : (
+          <EmptyState text="Nenhum movimento recente neste mês." />
+        )}
+      </div>
+    </section>
+  );
+}
 
 function calculateTransactionTotals(items = []) {
   const income = items.filter((item) => item.type === "income").reduce((total, item) => total + Number(item.amount || 0), 0);
@@ -4608,7 +6714,7 @@ function MultiFilterSelect({ label, values, onChange, options, allValue, allLabe
   );
 }
 
-function TransactionsPage({ form, setForm, resetForm, onSubmit, visibleTransactions, allCategories, query, setQuery, dateFilter, setDateFilter, categoryFilter, setCategoryFilter, typeFilter, setTypeFilter, cardFilter, setCardFilter, sortBy, setSortBy, onEdit, onDelete, onDuplicate, onView, exportCSV, exportExcel, creditCards }) {
+function TransactionsPage({ form, setForm, resetForm, onRepeatPreviousExpense, onSubmit, visibleTransactions, separatedCardTransactions = [], onOpenCards, allCategories, query, setQuery, dateFilter, setDateFilter, categoryFilter, setCategoryFilter, typeFilter, setTypeFilter, cardFilter, setCardFilter, sortBy, setSortBy, onEdit, onDelete, onDuplicate, onView, exportCSV, exportExcel, creditCards }) {
   const [showAutomaticTransactions, setShowAutomaticTransactions] = useState(false);
   const [selectedTransactionIds, setSelectedTransactionIds] = useState([]);
   const manualTransactions = visibleTransactions.filter((item) => !item.recurring_item_id && !item.recurrence_month);
@@ -4633,13 +6739,18 @@ function TransactionsPage({ form, setForm, resetForm, onSubmit, visibleTransacti
 
   return (
     <main className="grid gap-6 lg:grid-cols-[380px_1fr]">
-      <section className="surface-card rounded-[2rem] p-5 shadow-sm">
-        <div className="mb-5 flex items-center justify-between">
+      <section id="new-transaction-form-card" className="surface-card compact-entry-card rounded-[2rem] p-5 shadow-sm">
+        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h2 className="text-xl font-black">Novo lançamento</h2>
             <p className="muted-text text-sm">Registre receita ou despesa.</p>
           </div>
-          <button onClick={resetForm} className="ghost-button rounded-xl px-3 py-2 text-sm font-bold">Limpar</button>
+          <div className="flex flex-wrap gap-2 sm:justify-end">
+            <button type="button" onClick={onRepeatPreviousExpense} className="outline-button rounded-xl px-3 py-2 text-xs font-black">
+              Lançar igual ao anterior
+            </button>
+            <button type="button" onClick={resetForm} className="ghost-button rounded-xl px-3 py-2 text-xs font-bold">Limpar</button>
+          </div>
         </div>
 
         <TransactionForm form={form} setForm={setForm} onSubmit={onSubmit} editingId={null} creditCards={creditCards} />
@@ -4648,8 +6759,8 @@ function TransactionsPage({ form, setForm, resetForm, onSubmit, visibleTransacti
       <section className="surface-card rounded-[2rem] p-5 shadow-sm">
         <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
-            <h2 className="text-xl font-black">Lançamentos</h2>
-            <p className="muted-text text-sm">Filtre, ordene, edite ou exclua registros.</p>
+            <h2 className="text-xl font-black">Lançamentos avulsos</h2>
+            <p className="muted-text text-sm">Movimentações sem cartão vinculado. Gastos de cartão ficam separados na aba Cartões.</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <button onClick={exportExcel} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-black text-white transition hover:bg-emerald-700">
@@ -4706,6 +6817,25 @@ function TransactionsPage({ form, setForm, resetForm, onSubmit, visibleTransacti
           </select>
         </div>
 
+        {separatedCardTransactions.length > 0 && (
+          <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-blue-500/20 bg-blue-500/10 p-4 text-sm md:flex-row md:items-center md:justify-between">
+            <div className="flex items-start gap-3">
+              <div className="rounded-2xl bg-blue-500/10 p-2 text-blue-300">
+                <CreditCard size={18} />
+              </div>
+              <div>
+                <strong className="text-blue-300">{separatedCardTransactions.length} lançamento(s) de cartão separado(s)</strong>
+                <p className="muted-text mt-1 text-xs font-semibold">
+                  Eles continuam entrando no painel, relatórios, PDF e Excel, mas ficam organizados em Cartões para não misturar com lançamentos avulsos.
+                </p>
+              </div>
+            </div>
+            <button type="button" onClick={onOpenCards} className="outline-button rounded-2xl px-4 py-2 text-xs font-black">
+              Ver em Cartões
+            </button>
+          </div>
+        )}
+
         {dateFilter && (
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm font-bold text-emerald-300">
             <span>Filtrando lançamentos de {formatDateBR(dateFilter)}</span>
@@ -4754,7 +6884,7 @@ function TransactionsPage({ form, setForm, resetForm, onSubmit, visibleTransacti
             </div>
           )}
 
-          {manualTransactions.length ? manualTransactions.map((item) => <TransactionRow key={item.id} item={item} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} onView={onView} creditCards={creditCards} selectable selected={selectedTransactionIds.includes(item.id)} onToggleSelect={toggleTransactionSelection} />) : !automaticTransactions.length ? <EmptyState title="Nenhum lançamento encontrado" text="Tente limpar filtros ou cadastrar uma nova receita/despesa." /> : null}
+          {manualTransactions.length ? manualTransactions.map((item) => <TransactionRow key={item.id} item={item} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} onView={onView} creditCards={creditCards} selectable selected={selectedTransactionIds.includes(item.id)} onToggleSelect={toggleTransactionSelection} />) : !automaticTransactions.length ? <EmptyState title="Nenhum lançamento avulso encontrado" text={separatedCardTransactions.length ? "Os lançamentos de cartão deste filtro foram separados na aba Cartões." : "Tente limpar filtros ou cadastrar uma nova receita/despesa."} actionLabel={separatedCardTransactions.length ? "Ver em Cartões" : undefined} onAction={separatedCardTransactions.length ? onOpenCards : undefined} /> : null}
         </div>
       </section>
     </main>
@@ -5159,6 +7289,23 @@ function TypeSwitch({ value, onChange }) {
 }
 
 function TransactionForm({ form, setForm, onSubmit, editingId, creditCards = [] }) {
+  const [showOptionalFields, setShowOptionalFields] = useState(false);
+  const suggestedCategory = useMemo(() => suggestCategoryFromDescription(form.description, form.type), [form.description, form.type]);
+  const cardOptions = useMemo(() => getCardOptionsForPaymentMethod(creditCards, form.method), [creditCards, form.method]);
+
+  useEffect(() => {
+    if (!isCardBasedPaymentMethod(form.method) || form.type !== "expense") return;
+
+    if (form.card_id && !cardOptions.some((card) => card.id === form.card_id)) {
+      setForm((current) => ({ ...current, card_id: "" }));
+    }
+  }, [form.method, form.type, form.card_id, cardOptions, setForm]);
+
+  function shouldAutoApplyCategory(currentCategory) {
+    const standardExpenseCategories = defaultCategories.expense;
+    return !currentCategory || currentCategory === standardExpenseCategories[0] || currentCategory === "Outros";
+  }
+
   function update(field, value) {
     setForm((current) => {
       const next = { ...current, [field]: value };
@@ -5175,18 +7322,36 @@ function TransactionForm({ form, setForm, onSubmit, editingId, creditCards = [] 
         }
       }
 
-      if (field === "method" && !isCardBasedPaymentMethod(value)) {
-        next.card_id = "";
-        next.is_installment = false;
-        next.installments = "1";
+      if (field === "description" && current.type === "expense") {
+        const suggested = suggestCategoryFromDescription(value, current.type);
+        if (suggested && shouldAutoApplyCategory(current.category)) {
+          next.category = suggested;
+        }
+      }
+
+      if (field === "method") {
+        const matchingCards = getCardOptionsForPaymentMethod(creditCards, value);
+
+        if (!isCardBasedPaymentMethod(value)) {
+          next.card_id = "";
+          next.is_installment = false;
+          next.installments = "1";
+        } else if (current.type === "expense" && next.card_id && !matchingCards.some((card) => card.id === next.card_id)) {
+          next.card_id = "";
+        }
       }
 
       return next;
     });
   }
 
+  function applySuggestedCategory() {
+    if (!suggestedCategory) return;
+    update("category", suggestedCategory);
+  }
+
   return (
-    <form onSubmit={onSubmit} className="space-y-4">
+    <form onSubmit={onSubmit} className="transaction-form-mobile space-y-4">
       <div>
         <div className="mb-2 flex items-center justify-between gap-3">
           <span className="text-sm font-black">Tipo do lançamento</span>
@@ -5197,7 +7362,19 @@ function TransactionForm({ form, setForm, onSubmit, editingId, creditCards = [] 
         <TypeSwitch value={form.type} onChange={(value) => update("type", value)} />
       </div>
 
-      <Field label="Descrição"><input value={form.description} onChange={(event) => update("description", event.target.value)} placeholder="Ex.: Mercado, salário, boleto..." className="input" /></Field>
+      <Field label="Descrição">
+        <input value={form.description} onChange={(event) => update("description", event.target.value)} placeholder="Ex.: Mc Donalds, mercado, salário..." className="input" />
+        {suggestedCategory && form.type === "expense" && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 rounded-2xl border border-emerald-500/15 bg-emerald-500/5 px-3 py-2 text-xs font-bold text-emerald-300">
+            <span>Categoria sugerida: <strong>{suggestedCategory}</strong></span>
+            {form.category !== suggestedCategory && (
+              <button type="button" onClick={applySuggestedCategory} className="rounded-xl bg-emerald-500/10 px-2 py-1 font-black text-emerald-300 hover:bg-emerald-500/20">
+                Usar sugestão
+              </button>
+            )}
+          </div>
+        )}
+      </Field>
 
       <div className="grid grid-cols-2 gap-3">
         <Field label="Valor"><input type="number" min="0" step="0.01" value={form.amount} onChange={(event) => update("amount", event.target.value)} placeholder="0,00" className="input" /></Field>
@@ -5219,34 +7396,56 @@ function TransactionForm({ form, setForm, onSubmit, editingId, creditCards = [] 
       {isCardBasedPaymentMethod(form.method) && form.type === "expense" && (
         <Field label="Cartão vinculado">
           <select value={form.card_id} onChange={(event) => update("card_id", event.target.value)} className="input">
-            <option value="">Sem cartão vinculado</option>
-            {getCardOptionsForPaymentMethod(creditCards, form.method).map((card) => (
+            <option value="">{cardOptions.length ? "Sem cartão vinculado" : "Nenhum cartão compatível"}</option>
+            {cardOptions.map((card) => (
               <option key={card.id} value={card.id}>{card.name} · {formatCardType(card.card_type)}</option>
             ))}
           </select>
+          <p className="muted-text mt-2 text-xs font-semibold">
+            {cardOptions.length
+              ? `Mostrando apenas cartões compatíveis com ${form.method}.`
+              : `Nenhum cartão ativo compatível com ${form.method}. Cadastre um cartão deste tipo na aba Cartões.`}
+          </p>
         </Field>
       )}
 
-      {form.type === "expense" && (
-        <div className="field-shell rounded-2xl p-3">
-          <label className="flex items-center gap-3 text-sm font-bold">
-            <input type="checkbox" checked={form.is_installment} onChange={(event) => update("is_installment", event.target.checked)} />
-            Compra parcelada
-          </label>
-          {form.is_installment && (
-            <div className="mt-3 grid grid-cols-2 gap-3">
-              <Field label="Qtd. parcelas">
-                <input type="number" min="2" max="60" value={form.installments} onChange={(event) => update("installments", event.target.value)} className="input" />
-              </Field>
-              <div className="rounded-2xl bg-emerald-500/10 p-3 text-xs font-bold text-emerald-400">
-                O valor será dividido automaticamente nas próximas faturas.
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+      <div className="field-shell transaction-optional-panel rounded-2xl p-3">
+        <button
+          type="button"
+          onClick={() => setShowOptionalFields((value) => !value)}
+          className="flex w-full items-center justify-between gap-3 text-left text-sm font-black"
+        >
+          <span>Mais opções</span>
+          <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[11px] text-emerald-400">
+            {showOptionalFields ? "Ocultar" : "Parcelas / observação"}
+          </span>
+        </button>
 
-      <Field label="Observações"><textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} placeholder="Opcional" className="input min-h-24" /></Field>
+        {showOptionalFields && (
+          <div className="mt-3 space-y-3">
+            {form.type === "expense" && (
+              <div className="rounded-2xl border border-emerald-500/15 bg-emerald-500/5 p-3">
+                <label className="flex items-center gap-3 text-sm font-bold">
+                  <input type="checkbox" checked={form.is_installment} onChange={(event) => update("is_installment", event.target.checked)} />
+                  Compra parcelada
+                </label>
+                {form.is_installment && (
+                  <div className="mt-3 grid grid-cols-2 gap-3">
+                    <Field label="Qtd. parcelas">
+                      <input type="number" min="2" max="60" value={form.installments} onChange={(event) => update("installments", event.target.value)} className="input" />
+                    </Field>
+                    <div className="rounded-2xl bg-emerald-500/10 p-3 text-xs font-bold text-emerald-400">
+                      O valor será dividido automaticamente nas próximas faturas.
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <Field label="Observações"><textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} placeholder="Opcional" className="input min-h-20" /></Field>
+          </div>
+        )}
+      </div>
 
       <button className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-3 font-black text-white shadow-sm transition hover:scale-[1.01] hover:bg-emerald-700">
         <Plus size={18} /> {editingId ? "Salvar alteração" : "Adicionar lançamento"}
@@ -5373,65 +7572,185 @@ function LimitCard({ item, onDelete }) {
 }
 
 function RecurringPage({ recurringForm, setRecurringForm, recurringItems, onSubmit, onToggle, onEdit, onDelete, onGenerate, selectedMonth }) {
+  const recurringSummary = useMemo(() => {
+    const activeItems = recurringItems.filter((item) => item.is_active);
+    const monthOccurrences = activeItems.flatMap((item) =>
+      getRecurringOccurrenceDates(item, selectedMonth).map((date) => ({ ...item, date }))
+    );
+    const income = monthOccurrences.filter((item) => item.type === "income").reduce((total, item) => total + Number(item.amount || 0), 0);
+    const expense = monthOccurrences.filter((item) => item.type === "expense").reduce((total, item) => total + Number(item.amount || 0), 0);
+
+    return {
+      active: activeItems.length,
+      monthOccurrences: monthOccurrences.length,
+      income,
+      expense,
+    };
+  }, [recurringItems, selectedMonth]);
+
   function update(field, value) {
-    setRecurringForm((current) => ({ ...current, [field]: value }));
+    setRecurringForm((current) => {
+      const next = { ...current, [field]: value };
+
+      if (field === "type") {
+        const categories = defaultCategories[value];
+        next.category = categories.includes(current.category) ? current.category : categories[0];
+      }
+
+      if (field === "recurrence_type") {
+        if (!next.start_date) next.start_date = todayISODate();
+        if (value !== "custom_months") next.interval_months = "2";
+      }
+
+      if (field === "start_date") {
+        const parsed = parseISODateSafe(value);
+        if (parsed) next.day_of_month = String(parsed.getDate());
+      }
+
+      return next;
+    });
   }
 
+  const recurrenceHelper = recurrenceTypes.find((item) => item.value === recurringForm.recurrence_type)?.helper;
+  const selectedRecurrenceType = recurringForm.recurrence_type || "monthly";
+
   return (
-    <main className="grid gap-6 lg:grid-cols-[380px_1fr]">
+    <main className="grid gap-6 lg:grid-cols-[360px_1fr]">
       <section className="surface-card rounded-[2rem] p-5 shadow-sm">
-        <h2 className="text-xl font-black">Receitas e despesas fixas</h2>
-        <p className="muted-text mb-5 text-sm">Cadastre itens que se repetem mensalmente.</p>
+        <div className="mb-5 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-black">Receitas e despesas fixas</h2>
+            <p className="muted-text mt-1 text-sm leading-6">Cadastre mensal, semanal, quinzenal, anual ou em intervalo personalizado.</p>
+          </div>
+          <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-black text-emerald-400">Novo</span>
+        </div>
+
         <form onSubmit={onSubmit} className="space-y-4">
           <div className="segmented-control grid grid-cols-2 gap-2 rounded-2xl p-1">
             <button type="button" onClick={() => update("type", "expense")} className={classNames("rounded-xl px-3 py-2 text-sm font-black transition", recurringForm.type === "expense" ? "segmented-active text-rose-500 shadow-sm" : "muted-text")}>Despesa</button>
             <button type="button" onClick={() => update("type", "income")} className={classNames("rounded-xl px-3 py-2 text-sm font-black transition", recurringForm.type === "income" ? "segmented-active text-emerald-500 shadow-sm" : "muted-text")}>Receita</button>
           </div>
-          <Field label="Descrição"><input value={recurringForm.description} onChange={(event) => update("description", event.target.value)} className="input" placeholder="Ex.: Internet, salário..." /></Field>
+
+          <Field label="Descrição">
+            <input value={recurringForm.description} onChange={(event) => update("description", event.target.value)} className="input" placeholder="Ex.: IPVA, Netflix, salário..." />
+          </Field>
+
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Valor"><input type="number" min="0" step="0.01" value={recurringForm.amount} onChange={(event) => update("amount", event.target.value)} className="input" /></Field>
-            <Field label="Dia do mês"><input type="number" min="1" max="31" value={recurringForm.day_of_month} onChange={(event) => update("day_of_month", event.target.value)} className="input" /></Field>
+            <Field label="Valor">
+              <input type="number" min="0" step="0.01" value={recurringForm.amount} onChange={(event) => update("amount", event.target.value)} className="input" placeholder="0,00" />
+            </Field>
+            <Field label="Frequência">
+              <select value={selectedRecurrenceType} onChange={(event) => update("recurrence_type", event.target.value)} className="input">
+                {recurrenceTypes.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
+              </select>
+            </Field>
           </div>
+
+          {recurrenceHelper && (
+            <div className="rounded-2xl border border-emerald-500/15 bg-emerald-500/10 p-3 text-xs font-bold text-emerald-300">
+              {recurrenceHelper}
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            {(selectedRecurrenceType === "monthly" || selectedRecurrenceType === "custom_months") && (
+              <Field label="Dia do mês">
+                <input type="number" min="1" max="31" value={recurringForm.day_of_month} onChange={(event) => update("day_of_month", event.target.value)} className="input" />
+              </Field>
+            )}
+
+            {(selectedRecurrenceType === "weekly" || selectedRecurrenceType === "biweekly" || selectedRecurrenceType === "annual" || selectedRecurrenceType === "custom_months") && (
+              <Field label={selectedRecurrenceType === "annual" ? "Data anual" : "Data inicial"}>
+                <input type="date" value={recurringForm.start_date} onChange={(event) => update("start_date", event.target.value)} className="input" />
+              </Field>
+            )}
+
+            {selectedRecurrenceType === "custom_months" && (
+              <Field label="Intervalo">
+                <select value={recurringForm.interval_months} onChange={(event) => update("interval_months", event.target.value)} className="input">
+                  {[2, 3, 4, 6, 12].map((value) => <option key={value} value={value}>A cada {value} meses</option>)}
+                </select>
+              </Field>
+            )}
+          </div>
+
           <Field label="Categoria">
             <select value={recurringForm.category} onChange={(event) => update("category", event.target.value)} className="input">
               {defaultCategories[recurringForm.type].map((category) => <option key={category}>{category}</option>)}
             </select>
           </Field>
+
           <Field label="Forma de pagamento">
             <select value={recurringForm.method} onChange={(event) => update("method", event.target.value)} className="input">
               {paymentMethods.map((method) => <option key={method}>{method}</option>)}
             </select>
           </Field>
-          <button className="w-full rounded-2xl bg-emerald-600 px-4 py-3 font-black text-white">Cadastrar recorrência</button>
+
+          <label className="field-shell flex items-center gap-3 rounded-2xl p-3 text-sm font-bold">
+            <input type="checkbox" checked={recurringForm.is_active} onChange={(event) => update("is_active", event.target.checked)} /> Fixo ativo
+          </label>
+
+          <button className="w-full rounded-2xl bg-emerald-600 px-4 py-3 font-black text-white">Cadastrar fixo</button>
         </form>
       </section>
 
-      <section className="surface-card rounded-[2rem] p-5 shadow-sm">
-        <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h2 className="text-xl font-black">Itens fixos</h2>
-            <p className="muted-text text-sm">Os fixos são lançados automaticamente em {monthLabel(selectedMonth)}.</p>
+      <section className="space-y-5">
+        <div className="surface-card rounded-[2rem] p-5 shadow-sm">
+          <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-xl font-black">Fixos de {monthLabel(selectedMonth)}</h2>
+              <p className="muted-text text-sm">Agora os fixos podem repetir por semana, quinzena, ano ou intervalo personalizado.</p>
+            </div>
+            <button onClick={onGenerate} className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-black text-white">Sincronizar fixos</button>
           </div>
-          <button onClick={onGenerate} className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-black text-white">Sincronizar fixos</button>
+
+          <div className="grid gap-3 sm:grid-cols-4">
+            <SummaryMiniCard title="Ativos" value={String(recurringSummary.active)} tone="blue" helper="fixos cadastrados" />
+            <SummaryMiniCard title="Ocorrências" value={String(recurringSummary.monthOccurrences)} tone="amber" helper="neste mês" />
+            <SummaryMiniCard title="Receitas fixas" value={money.format(recurringSummary.income)} tone="emerald" helper="previstas" />
+            <SummaryMiniCard title="Despesas fixas" value={money.format(recurringSummary.expense)} tone="rose" helper="previstas" />
+          </div>
         </div>
-        <div className="max-h-[400px] overflow-y-auto pr-2">
-  <div className="space-y-3">
-          {recurringItems.length ? recurringItems.map((item) => <RecurringRow key={item.id} item={item} onToggle={onToggle} onEdit={onEdit} onDelete={onDelete} />) : <EmptyState text="Nenhum item recorrente cadastrado." />}
-        </div>
+
+        <div className="surface-card rounded-[2rem] p-5 shadow-sm">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-black">Itens cadastrados</h2>
+              <p className="muted-text text-sm">Ex.: IPVA anual, Netflix mensal, salário mensal e vale refeição mensal.</p>
+            </div>
+            <span className="rounded-full bg-slate-500/10 px-3 py-1 text-xs font-black muted-text">{recurringItems.length} item(ns)</span>
+          </div>
+
+          <div className="max-h-[470px] overflow-y-auto pr-2">
+            <div className="space-y-3">
+              {recurringItems.length ? recurringItems.map((item) => <RecurringRow key={item.id} item={item} selectedMonth={selectedMonth} onToggle={onToggle} onEdit={onEdit} onDelete={onDelete} />) : <EmptyState text="Nenhum item fixo cadastrado." />}
+            </div>
+          </div>
         </div>
       </section>
     </main>
   );
 }
 
-function RecurringRow({ item, onToggle, onEdit, onDelete }) {
+function RecurringRow({ item, selectedMonth, onToggle, onEdit, onDelete }) {
+  const occurrences = getRecurringOccurrenceDates(item, selectedMonth);
+  const nextOccurrence = occurrences[0];
+  const frequencyLabel = getRecurringFrequencyLabel(item);
+
   return (
     <article className="transaction-row flex flex-col gap-3 rounded-2xl p-4 sm:flex-row sm:items-center sm:justify-between">
-      <div>
-        <h3 className="font-black">{item.description}</h3>
-        <p className="muted-text text-sm">{item.category} · dia {item.day_of_month} · {item.method}</p>
+      <div className="min-w-0">
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <h3 className="font-black">{item.description}</h3>
+          <span className={classNames("rounded-full px-2.5 py-1 text-[11px] font-black", item.type === "income" ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300")}>{frequencyLabel}</span>
+          {!item.is_active && <span className="rounded-full bg-slate-500/10 px-2.5 py-1 text-[11px] font-black muted-text">Inativo</span>}
+        </div>
+        <p className="muted-text text-sm">{item.category} · {item.method} · {getRecurringScheduleText(item)}</p>
+        <p className="muted-text mt-1 text-xs font-semibold">
+          {nextOccurrence ? `${occurrences.length} ocorrência(s) em ${monthLabel(selectedMonth)} · próxima: ${formatDateBR(nextOccurrence)}` : `Sem ocorrência em ${monthLabel(selectedMonth)}`}
+        </p>
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3 sm:justify-end">
         <strong className={item.type === "income" ? "text-emerald-500" : "text-rose-500"}>{item.type === "income" ? "+" : "-"} {money.format(item.amount)}</strong>
         <button onClick={() => onToggle(item)} className="outline-button rounded-xl px-3 py-2 text-sm font-bold">{item.is_active ? "Ativo" : "Inativo"}</button>
         <button onClick={() => onEdit(item)} className="icon-button rounded-xl p-2 hover:text-blue-500" title="Editar item fixo"><Edit3 size={17} /></button>
@@ -5455,6 +7774,14 @@ function EditRecurringModal({ open, form, setForm, onSubmit, onClose }) {
       if (field === "type") {
         const categories = defaultCategories[value];
         next.category = categories.includes(current.category) ? current.category : categories[0];
+      }
+      if (field === "recurrence_type") {
+        if (!next.start_date) next.start_date = todayISODate();
+        if (value !== "custom_months") next.interval_months = "2";
+      }
+      if (field === "start_date") {
+        const parsed = parseISODateSafe(value);
+        if (parsed) next.day_of_month = String(parsed.getDate());
       }
       return next;
     });
@@ -5482,7 +7809,7 @@ function EditRecurringModal({ open, form, setForm, onSubmit, onClose }) {
               </div>
               <h2 className="text-3xl font-black tracking-tight">Editar item fixo</h2>
               <p className="mt-2 max-w-xl text-sm font-semibold leading-6 text-slate-300">
-                Ajuste a recorrência mensal sem alterar o formulário de novo item fixo.
+                Ajuste a frequência, data e categoria desse item fixo.
               </p>
             </div>
 
@@ -5498,7 +7825,7 @@ function EditRecurringModal({ open, form, setForm, onSubmit, onClose }) {
               <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
                 <div>
                   <p className="text-sm font-black">Tipo do item fixo</p>
-                  <p className="muted-text text-xs font-semibold">Defina se essa recorrência entra como receita ou despesa mensal.</p>
+                  <p className="muted-text text-xs font-semibold">Defina se essa recorrência entra como receita ou despesa fixa.</p>
                 </div>
                 <span className={classNames("rounded-full px-3 py-1 text-xs font-black", isIncome ? "bg-emerald-500/10 text-emerald-300" : "bg-rose-500/10 text-rose-300")}>
                   {typeLabel}
@@ -5516,9 +7843,33 @@ function EditRecurringModal({ open, form, setForm, onSubmit, onClose }) {
                 <Field label="Valor">
                   <input type="number" min="0" step="0.01" value={form.amount} onChange={(event) => update("amount", event.target.value)} placeholder="0,00" className="input input-lg" />
                 </Field>
-                <Field label="Dia do mês">
-                  <input type="number" min="1" max="31" value={form.day_of_month} onChange={(event) => update("day_of_month", event.target.value)} className="input input-lg" />
+                <Field label="Frequência">
+                  <select value={form.recurrence_type || "monthly"} onChange={(event) => update("recurrence_type", event.target.value)} className="input input-lg">
+                    {recurrenceTypes.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
+                  </select>
                 </Field>
+              </div>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                {((form.recurrence_type || "monthly") === "monthly" || (form.recurrence_type || "monthly") === "custom_months") && (
+                  <Field label="Dia do mês">
+                    <input type="number" min="1" max="31" value={form.day_of_month} onChange={(event) => update("day_of_month", event.target.value)} className="input input-lg" />
+                  </Field>
+                )}
+
+                {((form.recurrence_type || "monthly") === "weekly" || (form.recurrence_type || "monthly") === "biweekly" || (form.recurrence_type || "monthly") === "annual" || (form.recurrence_type || "monthly") === "custom_months") && (
+                  <Field label={(form.recurrence_type || "monthly") === "annual" ? "Data anual" : "Data inicial"}>
+                    <input type="date" value={form.start_date || ""} onChange={(event) => update("start_date", event.target.value)} className="input input-lg" />
+                  </Field>
+                )}
+
+                {(form.recurrence_type || "monthly") === "custom_months" && (
+                  <Field label="Intervalo">
+                    <select value={form.interval_months || "2"} onChange={(event) => update("interval_months", event.target.value)} className="input input-lg">
+                      {[2, 3, 4, 6, 12].map((value) => <option key={value} value={value}>A cada {value} meses</option>)}
+                    </select>
+                  </Field>
+                )}
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
@@ -5584,23 +7935,126 @@ function OnboardingBanner({ preferencesForm, setPreferencesForm, onSubmit }) {
 }
 
 function NotificationsPanel({ notifications }) {
+  const [selectedNotification, setSelectedNotification] = useState(null);
+  const visibleNotifications = notifications.slice(0, 6);
+  const hiddenCount = Math.max(0, notifications.length - visibleNotifications.length);
+
+  function toneClass(tone) {
+    if (tone === "rose") return "alert-compact-rose";
+    if (tone === "amber") return "alert-compact-amber";
+    if (tone === "emerald") return "alert-compact-emerald";
+    return "alert-compact-blue";
+  }
+
+  function severityLabel(item) {
+    if (item.priority <= 1 || item.tone === "rose") return "Alta prioridade";
+    if (item.priority <= 3 || item.tone === "amber") return "Atenção";
+    return "Informativo";
+  }
+
+  function impactText(item) {
+    if (item.tone === "rose") return "Esse alerta indica algo que pode afetar diretamente seu saldo, limite ou planejamento do mês.";
+    if (item.tone === "amber") return "Esse ponto ainda pode ser controlado, mas vale acompanhar antes que vire um problema maior.";
+    if (item.tone === "emerald") return "Esse alerta indica uma oportunidade positiva ou algo próximo de ser concluído.";
+    return "Esse é um aviso preventivo para melhorar a organização dos seus dados financeiros.";
+  }
+
+  if (!notifications.length) return null;
+
   return (
-    <section className="surface-card rounded-[2rem] p-5 shadow-sm">
-      <div className="mb-4 flex items-center gap-3">
-        <div className="rounded-2xl bg-emerald-500/10 p-3 text-emerald-400"><Bell size={20} /></div>
-        <div>
-          <h2 className="text-xl font-black">Alertas importantes</h2>
-          <p className="muted-text text-sm">Pontos que merecem sua atenção agora.</p>
-        </div>
-      </div>
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {notifications.map((item) => (
-          <div key={`${item.title}-${item.text}`} className="transaction-row rounded-2xl p-4">
-            <strong className={classNames("block", item.tone === "rose" ? "text-rose-400" : item.tone === "amber" ? "text-amber-400" : "text-blue-400")}>{item.title}</strong>
-            <p className="muted-text mt-1 text-sm leading-6">{item.text}</p>
+    <section className="surface-card rounded-[2rem] p-4 shadow-sm">
+      <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3">
+          <div className="rounded-2xl bg-emerald-500/10 p-2.5 text-emerald-400"><Bell size={18} /></div>
+          <div>
+            <h2 className="text-lg font-black">Alertas</h2>
+            <p className="muted-text text-xs font-semibold">Resumo discreto. Clique em um alerta para ver detalhes e dica.</p>
           </div>
-        ))}
+        </div>
+        <span className="alert-count-pill rounded-full px-3 py-1 text-xs font-black">
+          {notifications.length} ativo(s)
+        </span>
       </div>
+
+      <div className="flex flex-wrap gap-2">
+        {visibleNotifications.map((item) => (
+          <button
+            key={`${item.title}-${item.text}`}
+            type="button"
+            onClick={() => setSelectedNotification(item)}
+            className={classNames("alert-compact-button inline-flex items-center gap-2 rounded-2xl px-3 py-2 text-left text-xs font-black transition", toneClass(item.tone))}
+            title="Ver detalhes do alerta"
+          >
+            <span className="alert-dot" />
+            <span className="max-w-[210px] truncate">{item.title}</span>
+            {item.badge && <span className="alert-mini-badge">{item.badge}</span>}
+          </button>
+        ))}
+
+        {hiddenCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setSelectedNotification(notifications[visibleNotifications.length])}
+            className="alert-compact-button alert-compact-neutral inline-flex items-center gap-2 rounded-2xl px-3 py-2 text-xs font-black transition"
+          >
+            +{hiddenCount} outro(s)
+          </button>
+        )}
+      </div>
+
+      {selectedNotification && (
+        <div className="alert-detail-backdrop fixed inset-0 z-[90] flex items-start justify-center px-4 py-6 sm:py-10" onClick={() => setSelectedNotification(null)}>
+          <div className="alert-detail-modal surface-card w-full max-w-2xl rounded-[2rem] p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <span className={classNames("alert-detail-chip", toneClass(selectedNotification.tone))}>{selectedNotification.badge || "Alerta"}</span>
+                  <span className="alert-detail-chip alert-compact-neutral">{severityLabel(selectedNotification)}</span>
+                </div>
+                <h3 className="text-2xl font-black leading-tight">{selectedNotification.title}</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedNotification(null)}
+                className="icon-button rounded-2xl p-2"
+                aria-label="Fechar detalhes do alerta"
+                title="Fechar"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="grid gap-3">
+              <div className="alert-detail-box rounded-2xl p-4">
+                <strong className="block text-sm font-black">O que aconteceu</strong>
+                <p className="muted-text mt-2 text-sm font-semibold leading-6">{selectedNotification.text}</p>
+              </div>
+
+              <div className="alert-detail-box rounded-2xl p-4">
+                <strong className="block text-sm font-black">Impacto</strong>
+                <p className="muted-text mt-2 text-sm font-semibold leading-6">{impactText(selectedNotification)}</p>
+              </div>
+
+              <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4">
+                <strong className="block text-sm font-black text-emerald-400">Dica prática</strong>
+                <p className="mt-2 text-sm font-semibold leading-6 text-emerald-300">
+                  {selectedNotification.action || "Revise os lançamentos relacionados e acompanhe novamente no fechamento do mês."}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setSelectedNotification(null)}
+                className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-black text-white transition hover:bg-emerald-700"
+              >
+                Entendi
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -5653,14 +8107,26 @@ function CardsUsageMini({ cardUsage, setPage }) {
   );
 }
 
-function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsage, transactions, cardAdjustments, selectedMonth, onCardAdjustment, onDeleteCardAdjustment }) {
+function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsage, transactions, cardAdjustments, selectedMonth, onCardAdjustment, onDeleteCardAdjustment, onInstallmentPurchase, onEditTransaction, onDeleteTransaction, onDuplicateTransaction, onViewTransaction, creditCards = [] }) {
   const [selectedCardId, setSelectedCardId] = useState(cardUsage[0]?.id || "");
   const [adjustmentAmount, setAdjustmentAmount] = useState("");
   const [adjustmentNotes, setAdjustmentNotes] = useState("");
+  const [showInstallmentForm, setShowInstallmentForm] = useState(false);
+  const [showNewCardForm, setShowNewCardForm] = useState(cardUsage.length === 0);
+  const emptyInstallmentForm = {
+    description: "",
+    category: "Mercado",
+    amount: "",
+    installments: "2",
+    first_date: new Date().toISOString().slice(0, 10),
+    notes: "",
+  };
+  const [installmentForm, setInstallmentForm] = useState(emptyInstallmentForm);
 
   useEffect(() => {
     if (!selectedCardId && cardUsage[0]?.id) setSelectedCardId(cardUsage[0].id);
     if (selectedCardId && !cardUsage.some((card) => card.id === selectedCardId)) setSelectedCardId(cardUsage[0]?.id || "");
+    if (!cardUsage.length) setShowNewCardForm(true);
   }, [cardUsage, selectedCardId]);
 
   function update(field, value) {
@@ -5669,8 +8135,12 @@ function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsag
 
   const selectedCard = cardUsage.find((card) => card.id === selectedCardId) || cardUsage[0];
   const monthEnd = getMonthEndISO(selectedMonth);
-  const invoiceTransactions = selectedCard ? transactions.filter((item) => item.card_id === selectedCard.id && item.type === "expense" && item.date <= monthEnd) : [];
+  const selectedCardTransactions = selectedCard ? transactions.filter((item) => item.card_id === selectedCard.id && item.type === "expense") : [];
+  const invoiceTransactions = selectedCardTransactions.filter((item) => item.date <= monthEnd);
   const selectedCardAdjustments = selectedCard ? cardAdjustments.filter((item) => item.card_id === selectedCard.id && item.date <= monthEnd) : [];
+  const selectedInstallmentGroups = selectedCard ? buildInstallmentGroups(selectedCardTransactions, selectedMonth) : [];
+  const futureInstallmentsAmount = selectedInstallmentGroups.reduce((total, group) => total + Number(group.remainingAmount || 0), 0);
+  const hasCreditSelected = selectedCard && isCreditLikeCardType(selectedCard.card_type);
 
   function submitAdjustment(adjustmentType, fixedAmount) {
     const amount = fixedAmount || adjustmentAmount;
@@ -5679,60 +8149,229 @@ function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsag
     setAdjustmentNotes("");
   }
 
+  async function submitInstallmentPurchase(event) {
+    event.preventDefault();
+    const success = await onInstallmentPurchase?.({
+      ...installmentForm,
+      card_id: selectedCard?.id,
+    });
+
+    if (success) {
+      setInstallmentForm(emptyInstallmentForm);
+      setShowInstallmentForm(false);
+    }
+  }
+
   return (
-    <main className="grid gap-6 lg:grid-cols-[380px_1fr]">
-      <section className="surface-card rounded-[2rem] p-5 shadow-sm">
-        <h2 className="text-xl font-black">Novo cartão</h2>
-        <p className="muted-text mb-5 text-sm">Controle limite, fechamento e vencimento.</p>
-        <form onSubmit={onSubmit} className="space-y-4">
-          <Field label="Nome do cartão"><input value={cardForm.name} onChange={(event) => update("name", event.target.value)} className="input" placeholder="Ex.: Nubank" /></Field>
-          <Field label="Tipo do cartão">
-            <select value={cardForm.card_type || "Crédito"} onChange={(event) => update("card_type", event.target.value)} className="input">
-              {cardTypes.map((type) => <option key={type} value={type}>{type}</option>)}
-            </select>
-          </Field>
-          <Field label="Limite total"><input type="number" min="0" step="0.01" value={cardForm.card_limit} onChange={(event) => update("card_limit", event.target.value)} className="input" placeholder="0,00" /></Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Fechamento"><input type="number" min="0" max="31" value={cardForm.closing_day} onChange={(event) => update("closing_day", event.target.value)} className="input" placeholder="0" /></Field>
-            <Field label="Vencimento"><input type="number" min="0" max="31" value={cardForm.due_day} onChange={(event) => update("due_day", event.target.value)} className="input" placeholder="0" /></Field>
+    <main className="cards-page-layout grid gap-6 xl:grid-cols-[300px_minmax(0,1fr)] 2xl:grid-cols-[310px_minmax(0,1fr)]">
+      <aside className="grid gap-4 self-start xl:sticky xl:top-6">
+        <section className="card-list-panel surface-card rounded-[2rem] p-5 shadow-sm">
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-black">Meus cartões</h2>
+              <p className="muted-text text-sm">Escolha um cartão para abrir os detalhes.</p>
+            </div>
+            <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-black text-emerald-400">
+              {cardUsage.length}
+            </span>
           </div>
-          <p className="muted-text -mt-2 text-xs font-semibold">Use 0 para deixar sem fechamento ou sem vencimento.</p>
-          <Field label="Cor"><input type="color" value={cardForm.color} onChange={(event) => update("color", event.target.value)} className="input h-14" /></Field>
-          <label className="field-shell flex items-center gap-3 rounded-2xl p-3 text-sm font-bold">
-            <input type="checkbox" checked={cardForm.is_active} onChange={(event) => update("is_active", event.target.checked)} /> Cartão ativo
-          </label>
-          <button className="w-full rounded-2xl bg-emerald-600 px-4 py-3 font-black text-white">Criar cartão</button>
-        </form>
-      </section>
-      <section className="grid gap-6">
-        <div className="grid gap-4 md:grid-cols-2">
-          {cardUsage.length ? cardUsage.map((card) => (
-            <CreditCardCard
-              key={card.id}
-              card={card}
-              onEdit={onEdit}
-              onDelete={onDelete}
-              selected={card.id === selectedCard?.id}
-              onSelect={() => setSelectedCardId(card.id)}
-            />
-          )) : <EmptyState title="Nenhum cartão cadastrado" text="Cadastre seus cartões para acompanhar limite, fatura e vencimento." />}
-        </div>
+
+          <div className="space-y-3">
+            {cardUsage.length ? cardUsage.map((card) => (
+              <CardSidebarItem
+                key={card.id}
+                card={card}
+                selected={card.id === selectedCard?.id}
+                onSelect={() => setSelectedCardId(card.id)}
+                onEdit={onEdit}
+                onDelete={onDelete}
+              />
+            )) : <EmptyState title="Nenhum cartão cadastrado" text="Cadastre seu primeiro cartão para acompanhar limite, fatura e parcelas." />}
+          </div>
+        </section>
+
+        <section className="surface-card rounded-[2rem] p-5 shadow-sm">
+          <button
+            type="button"
+            onClick={() => setShowNewCardForm((value) => !value)}
+            className="flex w-full items-center justify-between gap-3 text-left"
+          >
+            <div>
+              <h2 className="text-lg font-black">Novo cartão</h2>
+              <p className="muted-text text-sm">Cadastre limite, fechamento e vencimento.</p>
+            </div>
+            <span className="rounded-2xl bg-emerald-500/10 px-3 py-2 text-sm font-black text-emerald-400">
+              {showNewCardForm ? "−" : "+"}
+            </span>
+          </button>
+
+          {showNewCardForm && (
+            <form onSubmit={onSubmit} className="mt-5 space-y-4">
+              <Field label="Nome do cartão"><input value={cardForm.name} onChange={(event) => update("name", event.target.value)} className="input" placeholder="Ex.: Nubank" /></Field>
+              <Field label="Tipo do cartão">
+                <select value={cardForm.card_type || "Crédito"} onChange={(event) => update("card_type", event.target.value)} className="input">
+                  {cardTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+                </select>
+              </Field>
+              <Field label="Limite total"><input type="number" min="0" step="0.01" value={cardForm.card_limit} onChange={(event) => update("card_limit", event.target.value)} className="input" placeholder="0,00" /></Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Fechamento"><input type="number" min="0" max="31" value={cardForm.closing_day} onChange={(event) => update("closing_day", event.target.value)} className="input" placeholder="0" /></Field>
+                <Field label="Vencimento"><input type="number" min="0" max="31" value={cardForm.due_day} onChange={(event) => update("due_day", event.target.value)} className="input" placeholder="0" /></Field>
+              </div>
+              <p className="muted-text -mt-2 text-xs font-semibold">Use 0 para deixar sem fechamento ou sem vencimento.</p>
+              <Field label="Cor"><input type="color" value={cardForm.color} onChange={(event) => update("color", event.target.value)} className="input h-14" /></Field>
+              <label className="field-shell flex items-center gap-3 rounded-2xl p-3 text-sm font-bold">
+                <input type="checkbox" checked={cardForm.is_active} onChange={(event) => update("is_active", event.target.checked)} /> Cartão ativo
+              </label>
+              <button className="w-full rounded-2xl bg-emerald-600 px-4 py-3 font-black text-white">Criar cartão</button>
+            </form>
+          )}
+        </section>
+      </aside>
+
+      <section className="grid gap-6 content-start">
         {cardUsage.length > 0 && (
-          <CreditCardInvoicePanel
-            card={selectedCard}
-            transactions={invoiceTransactions}
-            adjustments={selectedCardAdjustments}
-            selectedMonth={selectedMonth}
-            adjustmentAmount={adjustmentAmount}
-            setAdjustmentAmount={setAdjustmentAmount}
-            adjustmentNotes={adjustmentNotes}
-            setAdjustmentNotes={setAdjustmentNotes}
-            onAdjustment={submitAdjustment}
-            onDeleteAdjustment={onDeleteCardAdjustment}
-          />
+          <section className="mobile-card-picker surface-card rounded-[1.35rem] p-3 shadow-sm">
+            <label className="mb-2 block text-xs font-black uppercase tracking-[0.12em] text-emerald-400">Cartão selecionado</label>
+            <select value={selectedCard?.id || ""} onChange={(event) => setSelectedCardId(event.target.value)} className="input">
+              {cardUsage.map((card) => (
+                <option key={card.id} value={card.id}>
+                  {card.name} · {formatCardType(card.card_type)}
+                </option>
+              ))}
+            </select>
+          </section>
+        )}
+
+        {selectedCard ? (
+          <>
+            <section className="surface-card rounded-[2rem] p-5 shadow-sm">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <div className="mb-2 h-3 w-16 rounded-full" style={{ background: selectedCard.color || "#059669" }} />
+                  <h2 className="text-2xl font-black">{selectedCard.name}</h2>
+                  <p className="muted-text mt-1 text-sm">
+                    {formatCardType(selectedCard.card_type)} · {formatCardClosingDay(selectedCard.closing_day)} · {formatCardDueDay(selectedCard.due_day)}
+                  </p>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-3 xl:min-w-[520px]">
+                  <MiniInfo label={selectedCard.stored_value_card ? "Disponível" : "Em aberto"} value={money.format(selectedCard.stored_value_card ? selectedCard.available : selectedCard.spent)} />
+                  <MiniInfo label={selectedCard.stored_value_card ? "Base + recargas" : "Limite"} value={money.format(selectedCard.total_available_base || selectedCard.card_limit)} />
+                  <MiniInfo label="Parceladas" value={`${selectedInstallmentGroups.length} compra(s)`} />
+                </div>
+              </div>
+
+              <div className="mt-5 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowInstallmentForm((value) => !value)}
+                  disabled={!hasCreditSelected}
+                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-black text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  title={!hasCreditSelected ? "Disponível apenas para cartões de crédito" : "Nova compra parcelada"}
+                >
+                  <Plus size={17} /> {showInstallmentForm ? "Ocultar parcelamento" : "Nova compra parcelada"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onEdit(selectedCard)}
+                  className="outline-button inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-3 text-sm font-black"
+                >
+                  <Edit3 size={17} /> Editar cartão
+                </button>
+              </div>
+            </section>
+
+            {showInstallmentForm && (
+              <CardInstallmentPurchaseBox
+                card={selectedCard}
+                form={installmentForm}
+                setForm={setInstallmentForm}
+                onSubmit={submitInstallmentPurchase}
+                onClose={() => setShowInstallmentForm(false)}
+              />
+            )}
+
+            <CreditCardInvoicePanel
+              card={selectedCard}
+              transactions={invoiceTransactions}
+              allTransactions={selectedCardTransactions}
+              adjustments={selectedCardAdjustments}
+              selectedMonth={selectedMonth}
+              adjustmentAmount={adjustmentAmount}
+              setAdjustmentAmount={setAdjustmentAmount}
+              adjustmentNotes={adjustmentNotes}
+              setAdjustmentNotes={setAdjustmentNotes}
+              onAdjustment={submitAdjustment}
+              onDeleteAdjustment={onDeleteCardAdjustment}
+              onEditTransaction={onEditTransaction}
+              onDeleteTransaction={onDeleteTransaction}
+              onDuplicateTransaction={onDuplicateTransaction}
+              onViewTransaction={onViewTransaction}
+              creditCards={creditCards}
+            />
+          </>
+        ) : (
+          <section className="surface-card rounded-[2rem] p-8 text-center shadow-sm">
+            <EmptyState title="Cadastre um cartão" text="Depois de criar um cartão, esta área mostrará fatura, parcelas, pagamentos e movimentações." />
+          </section>
         )}
       </section>
     </main>
+  );
+}
+
+function CardSidebarItem({ card, selected, onSelect, onEdit, onDelete }) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={classNames(
+        "transaction-row interactive-row w-full rounded-2xl p-3 text-left transition",
+        selected && "selected-card"
+      )}
+    >
+      <div className="mb-2 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="mb-2 h-2 w-12 rounded-full" style={{ background: card.color || "#059669" }} />
+          <strong className="block truncate">{card.name}</strong>
+          <span className="muted-text mt-1 block text-xs font-bold">{formatCardType(card.card_type)}</span>
+        </div>
+        <div className="flex shrink-0 gap-1">
+          <span
+            role="button"
+            tabIndex={0}
+            onClick={(event) => { event.stopPropagation(); onEdit(card); }}
+            onKeyDown={(event) => { if (event.key === "Enter") { event.stopPropagation(); onEdit(card); } }}
+            className="icon-button rounded-xl p-2"
+            title="Editar cartão"
+          >
+            <Edit3 size={15} />
+          </span>
+          <span
+            role="button"
+            tabIndex={0}
+            onClick={(event) => { event.stopPropagation(); onDelete(card.id); }}
+            onKeyDown={(event) => { if (event.key === "Enter") { event.stopPropagation(); onDelete(card.id); } }}
+            className="icon-button rounded-xl p-2 hover:text-rose-500"
+            title="Excluir cartão"
+          >
+            <Trash2 size={15} />
+          </span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 text-xs font-bold">
+        <div>
+          <span className="muted-text block">{card.stored_value_card ? "Disponível" : "Em aberto"}</span>
+          <strong className={card.stored_value_card ? "text-emerald-500" : "text-rose-500"}>{money.format(card.stored_value_card ? card.available : card.spent)}</strong>
+        </div>
+        <div>
+          <span className="muted-text block">Livre</span>
+          <strong>{money.format(card.available)}</strong>
+        </div>
+      </div>
+    </button>
   );
 }
 
@@ -5763,9 +8402,98 @@ function CreditCardCard({ card, onEdit, onDelete, selected, onSelect }) {
   );
 }
 
+function CardInstallmentPurchaseBox({ card, form, setForm, onSubmit, onClose }) {
+  const isCreditCard = card && isCreditLikeCardType(card.card_type);
+  const amount = toNumber(form.amount);
+  const installments = clampInstallments(form.installments);
+  const installmentAmount = amount > 0 && installments > 0 ? amount / installments : 0;
+  const lastDate = form.first_date && installments > 1 ? addMonthsToISO(form.first_date, installments - 1) : "";
+
+  function update(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  return (
+    <section className="surface-card rounded-[2rem] p-5 shadow-sm">
+      <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <h2 className="text-xl font-black">Nova compra parcelada</h2>
+            <InfoPopover title="Compra parcelada" text="Cria automaticamente uma parcela por mês, vinculada ao cartão selecionado. As parcelas entram na fatura e aparecem no histórico de lançamentos." />
+          </div>
+          <p className="muted-text text-sm">Cadastre uma compra no crédito e acompanhe as parcelas dentro do cartão.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {card && (
+            <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-black text-emerald-400">
+              {card.name}
+            </span>
+          )}
+          {onClose && (
+            <button type="button" onClick={onClose} className="icon-button rounded-xl p-2" title="Fechar parcelamento">
+              <X size={17} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {!card && <EmptyState title="Selecione um cartão" text="Escolha um cartão de crédito para criar uma compra parcelada." />}
+
+      {card && !isCreditCard && (
+        <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4 text-sm font-bold text-amber-400">
+          Parcelamento está disponível apenas para cartões de crédito. Este cartão está marcado como {formatCardType(card.card_type)}.
+        </div>
+      )}
+
+      {card && isCreditCard && (
+        <form onSubmit={onSubmit} className="grid gap-4">
+          <div className="grid gap-3 md:grid-cols-[1.2fr_0.8fr]">
+            <Field label="Descrição da compra">
+              <input value={form.description} onChange={(event) => update("description", event.target.value)} className="input" placeholder="Ex.: Notebook, celular, viagem" />
+            </Field>
+            <Field label="Categoria">
+              <select value={form.category} onChange={(event) => update("category", event.target.value)} className="input">
+                {defaultCategories.expense.map((category) => <option key={category} value={category}>{category}</option>)}
+              </select>
+            </Field>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-3">
+            <Field label="Valor total">
+              <input type="number" min="0" step="0.01" value={form.amount} onChange={(event) => update("amount", event.target.value)} className="input" placeholder="0,00" />
+            </Field>
+            <Field label="Quantidade de parcelas">
+              <input type="number" min="2" max="60" value={form.installments} onChange={(event) => update("installments", event.target.value)} className="input" placeholder="2" />
+            </Field>
+            <Field label="Data da 1ª parcela">
+              <input type="date" value={form.first_date} onChange={(event) => update("first_date", event.target.value)} className="input" />
+            </Field>
+          </div>
+
+          <Field label="Observação">
+            <input value={form.notes} onChange={(event) => update("notes", event.target.value)} className="input" placeholder="Opcional" />
+          </Field>
+
+          <div className="grid gap-3 rounded-[1.5rem] border border-blue-500/20 bg-blue-500/5 p-4 text-sm md:grid-cols-4">
+            <MiniInfo label="Valor total" value={amount > 0 ? money.format(amount) : "R$ 0,00"} />
+            <MiniInfo label="Parcela média" value={installmentAmount > 0 ? `${installments}x de ${money.format(installmentAmount)}` : "Informe o valor"} />
+            <MiniInfo label="Última parcela" value={lastDate ? formatDateBR(lastDate) : "-"} />
+            <MiniInfo label="Cartão" value={card.name} />
+          </div>
+
+          <button className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-3 font-black text-white transition hover:bg-emerald-700">
+            <Plus size={18} /> Criar compra parcelada
+          </button>
+        </form>
+      )}
+    </section>
+  );
+}
+
 function CreditCardInvoicePanel({
   card,
   transactions,
+  allTransactions = transactions,
   adjustments,
   selectedMonth,
   adjustmentAmount,
@@ -5774,10 +8502,16 @@ function CreditCardInvoicePanel({
   setAdjustmentNotes,
   onAdjustment,
   onDeleteAdjustment,
+  onEditTransaction,
+  onDeleteTransaction,
+  onDuplicateTransaction,
+  onViewTransaction,
+  creditCards = [],
 }) {
   if (!card) return null;
 
   const totalTransactions = transactions.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const installmentGroups = buildInstallmentGroups(allTransactions, selectedMonth);
   const paymentLabel = card.stored_value_card ? "Adicionar saldo/recarga" : "Registrar pagamento";
   const quickActionLabel = card.stored_value_card ? "Adicionar saldo atual" : "Pagar valor em aberto";
   const quickActionType = card.stored_value_card ? "credit" : "payment";
@@ -5871,21 +8605,70 @@ function CreditCardInvoicePanel({
         </div>
       )}
 
-      <div className="max-h-[300px] overflow-y-auto pr-2">
+      {installmentGroups.length > 0 && (
+        <div className="mb-5">
+          <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="font-black">Compras parceladas</h3>
+              <p className="muted-text text-xs font-semibold">Resumo agrupado por compra, com progresso até {monthLabel(selectedMonth)}.</p>
+            </div>
+            <span className="rounded-full bg-blue-500/10 px-3 py-1 text-xs font-black text-blue-400">
+              {installmentGroups.length} compra(s)
+            </span>
+          </div>
+
+          <div className="grid gap-3">
+            {installmentGroups.map((group) => (
+              <article key={group.id} className="transaction-row rounded-2xl p-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <h4 className="font-black">{group.description}</h4>
+                    <p className="muted-text mt-1 text-sm">
+                      {group.category} · {formatDateBR(group.firstDate)} até {formatDateBR(group.lastDate)}
+                    </p>
+                  </div>
+                  <div className="text-left md:text-right">
+                    <strong className="block text-blue-400">{group.currentInstallment}/{group.totalInstallments}</strong>
+                    <span className="muted-text text-xs font-semibold">{group.status}</span>
+                  </div>
+                </div>
+
+                <div className="mt-4">
+                  <ProgressBar value={group.currentInstallment} max={group.totalInstallments || 1} danger={false} />
+                </div>
+
+                <div className="mt-4 grid gap-3 text-sm md:grid-cols-4">
+                  <div><span className="muted-text block">Valor total</span><strong>{money.format(group.totalAmount)}</strong></div>
+                  <div><span className="muted-text block">Parcela média</span><strong>{money.format(group.installmentAmount)}</strong></div>
+                  <div><span className="muted-text block">Restante futuro</span><strong>{money.format(group.remainingAmount)}</strong></div>
+                  <div><span className="muted-text block">Próxima parcela</span><strong>{group.nextDate ? formatDateBR(group.nextDate) : "Finalizada"}</strong></div>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="max-h-[360px] overflow-y-auto pr-2">
   <div className="space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <h3 className="font-black">Lançamentos vinculados</h3>
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 className="font-black">Movimentações do cartão</h3>
+            <p className="muted-text text-xs font-semibold">Gastos vinculados a este cartão ficam separados dos lançamentos avulsos.</p>
+          </div>
           <span className="muted-text text-sm font-semibold">Total lançado: {money.format(totalTransactions)}</span>
         </div>
         {transactions.length ? transactions.map((item) => (
-          <div key={item.id} className="transaction-row flex flex-col gap-2 rounded-2xl p-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <strong>{item.description}</strong>
-              <p className="muted-text text-sm">{item.category} · {formatDateBR(item.date)} {item.installment_total ? `· ${item.installment_number}/${item.installment_total}` : ""}</p>
-            </div>
-            <strong className="text-rose-500">{money.format(item.amount)}</strong>
-          </div>
-        )) : <EmptyState title="Nenhum lançamento vinculado" text="Vincule lançamentos a este cartão para acompanhar saldo, limite ou fatura acumulada." />}
+          <TransactionRow
+            key={item.id}
+            item={item}
+            onEdit={onEditTransaction}
+            onDelete={onDeleteTransaction}
+            onDuplicate={onDuplicateTransaction}
+            onView={onViewTransaction}
+            creditCards={creditCards}
+          />
+        )) : <EmptyState title="Nenhuma movimentação neste cartão" text="Vincule lançamentos a este cartão para acompanhar saldo, limite ou fatura acumulada." />}
       </div>
       </div>
     </section>
@@ -5976,6 +8759,178 @@ function FinancialCalendarPage({ selectedMonth, events }) {
     </main>
   );
 }
+
+function AccountPage({
+  user,
+  profileName,
+  setProfileName,
+  onProfileSubmit,
+  preferencesForm,
+  setPreferencesForm,
+  onPreferencesSubmit,
+  exportBackup,
+  importBackup,
+  deleteAllUserData,
+  onSignOut,
+  setPage,
+  stats = {},
+}) {
+  const createdAt = user?.created_at ? formatDateBR(user.created_at.slice(0, 10)) : "Não informado";
+  const email = user?.email || "E-mail não informado";
+
+  return (
+    <main className="grid gap-6">
+      <section className="surface-card rounded-[2rem] p-5 shadow-sm sm:p-6">
+        <div className="grid gap-5 lg:grid-cols-[1fr_auto] lg:items-center">
+          <div className="flex min-w-0 items-start gap-4">
+            <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-3xl bg-emerald-500/10 text-emerald-400">
+              <UserRound size={26} />
+            </div>
+            <div className="min-w-0">
+              <p className="muted-text text-xs font-black uppercase tracking-[0.16em]">Conta</p>
+              <h2 className="mt-1 truncate text-2xl font-black sm:text-3xl">{profileName || user?.user_metadata?.name || "Minha conta"}</h2>
+              <p className="muted-text mt-1 truncate text-sm font-semibold">{email}</p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2 lg:justify-end">
+            <button type="button" onClick={() => setPage?.("reports")} className="outline-button rounded-2xl px-4 py-2 text-sm font-black">
+              Relatórios
+            </button>
+            <button type="button" onClick={exportBackup} className="outline-button rounded-2xl px-4 py-2 text-sm font-black">
+              Backup
+            </button>
+            <button type="button" onClick={onSignOut} className="signout-button rounded-2xl px-4 py-2 text-sm font-black">
+              Sair
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <SummaryMiniCard title="Lançamentos" value={String(stats.transactions || 0)} tone="blue" helper="registros salvos" />
+        <SummaryMiniCard title="Cartões" value={String(stats.cards || 0)} tone="emerald" helper="cartões cadastrados" />
+        <SummaryMiniCard title="Metas" value={String(stats.goals || 0)} tone="amber" helper="objetivos criados" />
+        <SummaryMiniCard title="Fixos" value={String(stats.recurring || 0)} tone="purple" helper="recorrências ativas" />
+      </section>
+
+      <section className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+        <div className="grid gap-6">
+          <section className="surface-card rounded-[2rem] p-5 shadow-sm">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-black">Perfil</h3>
+                <p className="muted-text mt-1 text-sm">Atualize o nome exibido no painel.</p>
+              </div>
+              <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-black text-emerald-400">Conta ativa</span>
+            </div>
+
+            <form onSubmit={onProfileSubmit} className="grid gap-4">
+              <Field label="Nome">
+                <input value={profileName} onChange={(event) => setProfileName(event.target.value)} className="input" placeholder="Seu nome" />
+              </Field>
+              <Field label="E-mail">
+                <input value={email} className="input opacity-70" disabled />
+              </Field>
+              <Field label="Criada em">
+                <input value={createdAt} className="input opacity-70" disabled />
+              </Field>
+              <button type="submit" className="rounded-2xl bg-emerald-600 px-4 py-3 font-black text-white transition hover:bg-emerald-700">
+                Salvar perfil
+              </button>
+            </form>
+          </section>
+
+          <section className="surface-card rounded-[2rem] p-5 shadow-sm">
+            <h3 className="text-xl font-black">Atalhos</h3>
+            <p className="muted-text mt-1 text-sm">Acesse rapidamente áreas importantes.</p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+              <button type="button" onClick={() => setPage?.("payments")} className="transaction-row interactive-row flex items-center justify-between rounded-2xl p-3 text-left text-sm font-black">
+                <span>Pagamentos</span>
+                <CheckCircle2 size={17} className="text-emerald-400" />
+              </button>
+              <button type="button" onClick={() => setPage?.("reports")} className="transaction-row interactive-row flex items-center justify-between rounded-2xl p-3 text-left text-sm font-black">
+                <span>Relatórios</span>
+                <FileText size={17} className="text-emerald-400" />
+              </button>
+              <button type="button" onClick={() => setPage?.("cards")} className="transaction-row interactive-row flex items-center justify-between rounded-2xl p-3 text-left text-sm font-black">
+                <span>Cartões</span>
+                <CreditCard size={17} className="text-emerald-400" />
+              </button>
+            </div>
+          </section>
+        </div>
+
+        <div className="grid gap-6">
+          <section className="surface-card rounded-[2rem] p-5 shadow-sm">
+            <h3 className="text-xl font-black">Preferências financeiras</h3>
+            <p className="muted-text mt-1 text-sm">Configure sua renda base, objetivo e aparência padrão.</p>
+            <form onSubmit={onPreferencesSubmit} className="mt-4 grid gap-4 md:grid-cols-2">
+              <Field label="Renda mensal base">
+                <input value={preferencesForm.monthly_income} onChange={(event) => setPreferencesForm((current) => ({ ...current, monthly_income: event.target.value }))} className="input" placeholder="0,00" />
+              </Field>
+              <Field label="Moeda">
+                <select value={preferencesForm.currency} onChange={(event) => setPreferencesForm((current) => ({ ...current, currency: event.target.value }))} className="input">
+                  <option value="BRL">BRL - Real brasileiro</option>
+                </select>
+              </Field>
+              <Field label="Tema padrão">
+                <select value={preferencesForm.default_theme} onChange={(event) => setPreferencesForm((current) => ({ ...current, default_theme: event.target.value }))} className="input">
+                  <option value="system">Automático</option>
+                  <option value="dark">Escuro</option>
+                  <option value="light">Claro</option>
+                </select>
+              </Field>
+              <Field label="Objetivo principal">
+                <input value={preferencesForm.main_goal} onChange={(event) => setPreferencesForm((current) => ({ ...current, main_goal: event.target.value }))} className="input" placeholder="Ex.: montar reserva" />
+              </Field>
+              <label className="field-shell md:col-span-2 flex items-center gap-3 rounded-2xl p-4 text-sm font-bold">
+                <input type="checkbox" checked={preferencesForm.onboarding_completed} onChange={(event) => setPreferencesForm((current) => ({ ...current, onboarding_completed: event.target.checked }))} />
+                Marcar introdução como concluída
+              </label>
+              <div className="md:col-span-2">
+                <button type="submit" className="rounded-2xl bg-emerald-600 px-4 py-3 font-black text-white transition hover:bg-emerald-700">
+                  Salvar preferências
+                </button>
+              </div>
+            </form>
+          </section>
+
+          <section className="grid gap-6 lg:grid-cols-2">
+            <div className="surface-card rounded-[2rem] p-5 shadow-sm">
+              <h3 className="text-lg font-black">Dados e backup</h3>
+              <p className="muted-text mt-1 text-sm leading-6">Exporte um backup completo ou restaure dados salvos anteriormente.</p>
+              <div className="mt-4 grid gap-3">
+                <button type="button" onClick={exportBackup} className="outline-button rounded-2xl px-4 py-3 text-sm font-black">Exportar backup</button>
+                <label className="outline-button cursor-pointer rounded-2xl px-4 py-3 text-center text-sm font-black">
+                  Importar backup
+                  <input type="file" accept="application/json" onChange={importBackup} className="hidden" />
+                </label>
+                <button type="button" onClick={deleteAllUserData} className="rounded-2xl bg-rose-600 px-4 py-3 text-sm font-black text-white transition hover:bg-rose-700">Apagar dados</button>
+              </div>
+            </div>
+
+            <div className="surface-card rounded-[2rem] p-5 shadow-sm">
+              <h3 className="text-lg font-black">Sobre o app</h3>
+              <p className="muted-text mt-1 text-sm leading-6">Controle financeiro pessoal desenvolvido com React, Vite, Supabase e Vercel.</p>
+              <div className="mt-4 space-y-3 text-sm">
+                <div className="transaction-row rounded-2xl p-3">
+                  <strong>Projeto</strong>
+                  <p className="muted-text mt-1">Controle Financeiro | Enzo Amorim</p>
+                </div>
+                <div className="transaction-row rounded-2xl p-3">
+                  <strong>Versão</strong>
+                  <p className="muted-text mt-1">PWA/mobile otimizado</p>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 
 function SettingsPage({ preferencesForm, setPreferencesForm, onSubmit, exportBackup, importBackup, deleteAllUserData }) {
   function update(field, value) {
@@ -6128,16 +9083,25 @@ function MonthSelector({ value, onChange, years }) {
     onChange(`${nextYear}-${month}`);
   }
 
+  function moveMonth(offset) {
+    const date = new Date(Number(year), Number(month) - 1 + offset, 1);
+    onChange(date.toISOString().slice(0, 7));
+  }
+
   return (
-    <div className="month-selector field-shell flex items-center gap-2 rounded-2xl px-3 py-2 text-sm">
-      <CalendarDays size={17} />
-      <select value={month} onChange={(event) => updateMonth(event.target.value)} className="month-select bg-transparent font-bold outline-none" aria-label="Selecionar mês">
-        {monthOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-      </select>
-      <span className="muted-text font-bold">de</span>
-      <select value={year} onChange={(event) => updateYear(event.target.value)} className="year-select bg-transparent font-bold outline-none" aria-label="Selecionar ano">
-        {years.map((item) => <option key={item} value={item}>{item}</option>)}
-      </select>
+    <div className="month-selector month-selector-compact field-shell" aria-label="Selecionar mês do painel">
+      <button type="button" onClick={() => moveMonth(-1)} className="month-nav-button" aria-label="Mês anterior">‹</button>
+      <div className="month-selector-center">
+        <CalendarDays size={15} />
+        <select value={month} onChange={(event) => updateMonth(event.target.value)} className="month-select bg-transparent font-bold outline-none" aria-label="Selecionar mês">
+          {monthOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+        </select>
+        <span className="muted-text font-black">/</span>
+        <select value={year} onChange={(event) => updateYear(event.target.value)} className="year-select bg-transparent font-bold outline-none" aria-label="Selecionar ano">
+          {years.map((item) => <option key={item} value={item}>{item}</option>)}
+        </select>
+      </div>
+      <button type="button" onClick={() => moveMonth(1)} className="month-nav-button" aria-label="Próximo mês">›</button>
     </div>
   );
 }
@@ -6485,6 +9449,180 @@ function GlobalStyles() {
       .dashboard-action-button {
         min-height: 2.55rem;
       }
+      .dashboard-header-premium {
+        min-height: 4.15rem;
+        padding: 0.8rem 1rem !important;
+        border-radius: 1.45rem !important;
+      }
+      .dashboard-brand-premium {
+        gap: 0.7rem;
+      }
+      .dashboard-logo-premium {
+        height: 2.25rem !important;
+        width: 2.25rem !important;
+        border-radius: 0.85rem !important;
+        box-shadow: 0 10px 20px rgba(2, 6, 23, 0.2);
+      }
+      .dashboard-title-premium {
+        font-size: clamp(1rem, 1.7vw, 1.3rem);
+        letter-spacing: -0.04em;
+      }
+      .dashboard-actions-premium {
+        flex-wrap: nowrap;
+        gap: 0.45rem;
+      }
+      .header-icon-button {
+        min-height: 2.35rem !important;
+        border-radius: 1rem !important;
+        padding: 0.52rem 0.75rem !important;
+      }
+      .header-icon-button span {
+        font-size: 0.78rem;
+        font-weight: 950;
+      }
+      .month-selector-compact {
+        min-height: 2.35rem;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        border-radius: 1rem;
+        padding: 0.18rem;
+        white-space: nowrap;
+      }
+      .month-selector-center {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.28rem;
+        padding-inline: 0.35rem;
+      }
+      .month-nav-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.85rem;
+        height: 1.85rem;
+        border: 0;
+        border-radius: 0.8rem;
+        background: transparent;
+        color: var(--muted);
+        font-size: 1.25rem;
+        font-weight: 950;
+        line-height: 1;
+        cursor: pointer;
+        transition: background-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
+      }
+      .month-nav-button:hover {
+        background: rgba(16, 185, 129, 0.12);
+        color: #10b981;
+        transform: translateY(-1px);
+      }
+      .month-selector-compact .month-select {
+        width: auto;
+        max-width: 6.4rem;
+        text-transform: capitalize;
+      }
+      .month-selector-compact .year-select {
+        width: 4rem;
+      }
+      .month-selector-compact .month-select,
+      .month-selector-compact .year-select {
+        color: var(--text);
+        font-size: 0.78rem;
+        font-weight: 950;
+      }
+      .dashboard-account-menu {
+        position: relative;
+        flex: 0 0 auto;
+      }
+      .account-menu-button {
+        min-height: 2.35rem !important;
+        max-width: 14.5rem;
+        border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+        background: color-mix(in srgb, var(--surface-2) 90%, transparent);
+        color: var(--text);
+        cursor: pointer;
+      }
+      .account-menu-button:hover {
+        border-color: rgba(16, 185, 129, 0.38);
+        background: color-mix(in srgb, var(--surface-2) 75%, rgba(16, 185, 129, 0.12));
+        transform: translateY(-1px);
+      }
+      .account-menu-name {
+        display: block;
+        max-width: 8.5rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 0.78rem;
+      }
+      .account-menu-caret {
+        color: var(--muted);
+        font-size: 0.68rem;
+      }
+      .account-menu-panel {
+        position: absolute;
+        right: 0;
+        top: calc(100% + 0.65rem);
+        z-index: 90;
+        width: min(18rem, calc(100vw - 2rem));
+        border-radius: 1.35rem;
+        border: 1px solid color-mix(in srgb, var(--border) 84%, transparent);
+        background: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+        color: var(--text);
+        box-shadow: 0 24px 70px rgba(2, 6, 23, 0.3);
+        padding: 0.55rem;
+      }
+      .account-menu-header {
+        border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+        margin-bottom: 0.4rem;
+        padding: 0.55rem 0.6rem 0.7rem;
+      }
+      .account-menu-header strong,
+      .account-menu-header span {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .account-menu-header strong {
+        font-size: 0.86rem;
+        font-weight: 950;
+      }
+      .account-menu-header span {
+        margin-top: 0.18rem;
+        color: var(--muted);
+        font-size: 0.72rem;
+        font-weight: 750;
+      }
+      .account-menu-item {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        min-height: 2.45rem;
+        border: 0;
+        border-radius: 0.95rem;
+        background: transparent;
+        color: var(--text);
+        padding: 0.55rem 0.65rem;
+        text-align: left;
+        font-size: 0.8rem;
+        font-weight: 900;
+        cursor: pointer;
+        transition: background-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
+      }
+      .account-menu-item:hover {
+        background: rgba(16, 185, 129, 0.12);
+        color: #10b981;
+        transform: translateX(2px);
+      }
+      .account-menu-item-danger {
+        color: #fb7185;
+      }
+      .account-menu-item-danger:hover {
+        background: rgba(244, 63, 94, 0.12);
+        color: #fb7185;
+      }
       .signout-button {
         border: 1px solid rgba(244, 63, 94, 0.35);
         background: rgba(244, 63, 94, 0.1);
@@ -6569,6 +9707,90 @@ function GlobalStyles() {
 
       .dashboard-tab-active svg {
         color: currentColor;
+      }
+
+      .dashboard-tabs-compact {
+        justify-content: center;
+        overflow: visible;
+        flex-wrap: wrap;
+      }
+
+      .dashboard-more-menu {
+        position: relative;
+        flex: 0 0 auto;
+      }
+
+      .dashboard-more-panel {
+        position: absolute;
+        right: 0;
+        top: calc(100% + 0.7rem);
+        z-index: 80;
+        width: min(22rem, calc(100vw - 2rem));
+        border-radius: 1.5rem;
+        border: 1px solid color-mix(in srgb, var(--border) 84%, transparent);
+        background: color-mix(in srgb, var(--surface) 96%, var(--surface-2) 4%);
+        color: var(--text);
+        box-shadow: 0 26px 70px rgba(2, 6, 23, 0.28);
+        padding: 0.75rem;
+      }
+
+      .dashboard-more-header {
+        border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+        padding: 0.45rem 0.55rem 0.7rem;
+        margin-bottom: 0.55rem;
+      }
+
+      .dashboard-more-header strong {
+        display: block;
+        font-size: 0.86rem;
+        font-weight: 950;
+      }
+
+      .dashboard-more-header span {
+        display: block;
+        margin-top: 0.2rem;
+        color: var(--muted);
+        font-size: 0.72rem;
+        font-weight: 750;
+      }
+
+      .dashboard-more-grid {
+        display: grid;
+        gap: 0.45rem;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .dashboard-more-item {
+        min-height: 2.65rem;
+        border-radius: 1.05rem;
+        border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+        background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+        color: var(--text);
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 0.5rem;
+        padding: 0.65rem 0.75rem;
+        font-size: 0.78rem;
+        font-weight: 900;
+        transition: transform 0.2s ease, border-color 0.2s ease, background-color 0.2s ease;
+        cursor: pointer;
+      }
+
+      .dashboard-more-item:hover {
+        transform: translateY(-1px);
+        border-color: rgba(16, 185, 129, 0.42);
+        background: color-mix(in srgb, var(--surface-2) 72%, rgba(16, 185, 129, 0.12));
+      }
+
+      .dashboard-more-item-active {
+        border-color: rgba(16, 185, 129, 0.58);
+        background: rgba(16, 185, 129, 0.13);
+        color: #10b981;
+      }
+
+      .dashboard-more-item svg {
+        flex: 0 0 auto;
       }
 
       @media (max-width: 640px) {
@@ -7164,6 +10386,795 @@ function GlobalStyles() {
         from { opacity: 0; transform: translateY(8px); }
         to { opacity: 1; transform: translateY(0); }
       }
+
+      .alert-count-pill {
+        background: color-mix(in srgb, var(--surface-2) 76%, rgba(16, 185, 129, 0.12));
+        border: 1px solid var(--border);
+        color: var(--muted);
+      }
+
+      .alert-compact-button {
+        border: 1px solid var(--border);
+        background: color-mix(in srgb, var(--surface-2) 82%, transparent);
+        color: var(--text);
+        box-shadow: none;
+      }
+
+      .alert-compact-button:hover {
+        transform: translateY(-1px);
+        border-color: rgba(16, 185, 129, 0.35);
+        background: color-mix(in srgb, var(--surface-2) 70%, rgba(16, 185, 129, 0.08));
+      }
+
+      .alert-dot {
+        width: 0.45rem;
+        height: 0.45rem;
+        border-radius: 999px;
+        background: currentColor;
+        opacity: 0.85;
+      }
+
+      .alert-mini-badge {
+        border-radius: 999px;
+        background: rgba(2, 6, 23, 0.08);
+        padding: 0.15rem 0.45rem;
+        font-size: 0.62rem;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        opacity: 0.78;
+      }
+
+      .alert-compact-rose { color: #fb7185; }
+      .alert-compact-amber { color: #f59e0b; }
+      .alert-compact-emerald { color: #10b981; }
+      .alert-compact-blue { color: #60a5fa; }
+      .alert-compact-neutral { color: var(--muted); }
+
+      .alert-detail-backdrop {
+        background: rgba(2, 6, 23, 0.58);
+        backdrop-filter: blur(12px);
+      }
+
+      .alert-detail-modal {
+        animation: alertModalIn 0.18s ease-out;
+        border: 1px solid color-mix(in srgb, var(--border) 72%, rgba(16, 185, 129, 0.22));
+      }
+
+      .alert-detail-chip {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: color-mix(in srgb, var(--surface-2) 82%, transparent);
+        padding: 0.35rem 0.65rem;
+        font-size: 0.68rem;
+        font-weight: 950;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+
+      .alert-detail-box {
+        border: 1px solid var(--border);
+        background: color-mix(in srgb, var(--surface-2) 82%, transparent);
+      }
+
+      @keyframes alertModalIn {
+        from { opacity: 0; transform: translateY(-12px) scale(0.98); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
+      }
+
+      /* PWA / Mobile refinements */
+      .mobile-quick-shortcuts,
+      .mobile-fab-button,
+      .mobile-action-sheet,
+      .mobile-action-dim,
+      .mobile-more-sheet,
+      .mobile-nav-dim {
+        display: none;
+      }
+
+      @media (max-width: 768px) {
+        .app-shell {
+          min-height: 100dvh;
+        }
+
+        .mx-auto.flex.w-full.max-w-\[1500px\] {
+          padding-left: 0.85rem;
+          padding-right: 0.85rem;
+          padding-top: 0.85rem;
+          padding-bottom: calc(7.75rem + env(safe-area-inset-bottom));
+          gap: 0.85rem;
+        }
+
+        .dashboard-header {
+          position: sticky;
+          top: 0.65rem;
+          z-index: 30;
+          border-radius: 1.55rem !important;
+          padding: 0.75rem !important;
+          backdrop-filter: blur(18px);
+        }
+
+        .dashboard-logo {
+          height: 2.25rem !important;
+          width: 2.25rem !important;
+          border-radius: 0.95rem !important;
+        }
+
+        .dashboard-title {
+          font-size: 0.95rem !important;
+          line-height: 1.05rem !important;
+        }
+
+        .dashboard-user-pill,
+        .dashboard-subtitle,
+        .dashboard-actions .outline-button {
+          display: none !important;
+        }
+
+        .dashboard-actions {
+          width: auto !important;
+          margin-left: auto;
+          gap: 0.4rem !important;
+        }
+
+        .dashboard-actions .theme-button,
+        .dashboard-actions .signout-button {
+          width: 2.45rem;
+          height: 2.45rem;
+          padding: 0 !important;
+          justify-content: center;
+          border-radius: 1rem !important;
+          font-size: 0;
+        }
+
+        .dashboard-actions .theme-button svg,
+        .dashboard-actions .signout-button svg {
+          margin: 0 !important;
+        }
+
+        .dashboard-actions .header-icon-button span,
+        .dashboard-actions .account-menu-name,
+        .dashboard-actions .account-menu-caret {
+          display: none !important;
+        }
+
+        .dashboard-actions .account-menu-button {
+          width: 2.45rem;
+          height: 2.45rem;
+          padding: 0 !important;
+          justify-content: center;
+          border-radius: 1rem !important;
+        }
+
+        .account-menu-panel {
+          right: 0;
+          width: min(18rem, calc(100vw - 1.5rem));
+        }
+
+        .month-selector {
+          min-width: 9.2rem !important;
+          padding: 0.35rem !important;
+          gap: 0.25rem !important;
+          border-radius: 1rem !important;
+        }
+
+        .month-select { width: 5.25rem !important; }
+        .year-select { width: 3.75rem !important; }
+        .month-select, .year-select {
+          min-height: 2rem !important;
+          font-size: 0.72rem !important;
+          border-radius: 0.8rem !important;
+        }
+
+        .dashboard-tabs {
+          display: none !important;
+        }
+
+        .mobile-quick-shortcuts {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 0.55rem;
+        }
+
+        .mobile-quick-shortcuts button {
+          min-height: 3rem;
+          border-radius: 1.15rem;
+          border: 1px solid var(--border);
+          background: color-mix(in srgb, var(--surface) 88%, rgba(16, 185, 129, 0.06));
+          color: var(--text);
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 0.22rem;
+          font-size: 0.66rem;
+          font-weight: 950;
+          box-shadow: 0 10px 30px rgba(2, 6, 23, 0.12);
+        }
+
+        .surface-card,
+        .home-stat-card,
+        .home-feature-card,
+        .transaction-row,
+        .metric-card,
+        .financial-health-card {
+          border-radius: 1.35rem !important;
+        }
+
+        .surface-card {
+          padding: 0.95rem !important;
+        }
+
+        main.grid,
+        section.grid,
+        .grid.gap-6,
+        .grid.gap-5,
+        .grid.gap-4 {
+          gap: 0.85rem !important;
+        }
+
+        .transactions-layout {
+          display: grid;
+          grid-template-columns: 1fr !important;
+        }
+
+        .compact-entry-card h2 {
+          font-size: 1rem !important;
+        }
+
+        .compact-entry-card p,
+        .compact-entry-card .muted-text {
+          font-size: 0.72rem !important;
+        }
+
+        .transaction-form-mobile {
+          gap: 0.65rem !important;
+        }
+
+        .transaction-form-mobile .type-switch {
+          padding: 0.25rem !important;
+          border-radius: 1rem !important;
+        }
+
+        .transaction-form-mobile .type-option {
+          padding: 0.62rem 0.7rem !important;
+          border-radius: 0.9rem !important;
+        }
+
+        .transaction-form-mobile .type-option span:last-child {
+          display: none !important;
+        }
+
+        .input, .input-lg, select.input, textarea.input {
+          min-height: 2.65rem;
+          border-radius: 1rem !important;
+          font-size: 0.82rem !important;
+        }
+
+        textarea.input {
+          min-height: 4.5rem !important;
+        }
+
+        .transaction-optional-panel {
+          padding: 0.75rem !important;
+        }
+
+        .transaction-row {
+          padding: 0.78rem !important;
+        }
+
+        .transaction-row h3,
+        .transaction-row strong {
+          font-size: 0.86rem !important;
+        }
+
+        .transaction-row p,
+        .transaction-row .muted-text {
+          font-size: 0.7rem !important;
+          line-height: 1.15rem !important;
+        }
+
+        .metric-card {
+          padding: 0.9rem !important;
+        }
+
+        .metric-card .text-2xl,
+        .metric-card strong {
+          font-size: 1.05rem !important;
+        }
+
+        .financial-health-card {
+          padding: 0.95rem !important;
+        }
+
+        .financial-health-card h2 {
+          font-size: 1.1rem !important;
+        }
+
+        .financial-health-card p {
+          font-size: 0.75rem !important;
+          line-height: 1.25rem !important;
+        }
+
+        .custom-toast {
+          top: 0.75rem !important;
+          right: 0.75rem !important;
+          left: 0.75rem !important;
+          max-width: none !important;
+          width: auto !important;
+          border-radius: 1.25rem !important;
+          padding: 0.85rem !important;
+        }
+
+        .mobile-fab-button {
+          position: fixed;
+          right: 1.05rem;
+          bottom: calc(5.9rem + env(safe-area-inset-bottom));
+          z-index: 60;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 3.7rem;
+          height: 3.7rem;
+          border-radius: 1.45rem;
+          background: linear-gradient(135deg, #059669, #10b981);
+          color: #ffffff;
+          box-shadow: 0 18px 44px rgba(16, 185, 129, 0.34);
+          transition: transform .18s ease, box-shadow .18s ease;
+        }
+
+        .mobile-fab-open {
+          transform: rotate(90deg) scale(0.96);
+          box-shadow: 0 14px 34px rgba(244, 63, 94, 0.26);
+          background: linear-gradient(135deg, #e11d48, #f43f5e);
+        }
+
+        .mobile-action-dim,
+        .mobile-nav-dim {
+          position: fixed;
+          inset: 0;
+          display: block;
+          z-index: 49;
+          background: rgba(2, 6, 23, 0.42);
+          backdrop-filter: blur(6px);
+        }
+
+        .mobile-action-sheet,
+        .mobile-more-sheet {
+          position: fixed;
+          left: 0.85rem;
+          right: 0.85rem;
+          bottom: calc(5.85rem + env(safe-area-inset-bottom));
+          z-index: 55;
+          display: block;
+          border-radius: 1.55rem;
+          border: 1px solid var(--border);
+          background: color-mix(in srgb, var(--surface) 96%, transparent);
+          color: var(--text);
+          padding: 0.95rem;
+          box-shadow: 0 24px 70px rgba(2, 6, 23, 0.38);
+          backdrop-filter: blur(18px);
+          animation: mobileSheetIn .18s ease both;
+        }
+
+        .mobile-more-sheet {
+          bottom: calc(5.25rem + env(safe-area-inset-bottom));
+        }
+
+        .mobile-action-option,
+        .mobile-more-button {
+          min-height: 3.3rem;
+          border-radius: 1.1rem;
+          border: 1px solid var(--border);
+          background: color-mix(in srgb, var(--surface-2) 86%, transparent);
+          color: var(--text);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 0.45rem;
+          font-size: 0.78rem;
+          font-weight: 950;
+        }
+
+        .mobile-action-option svg,
+        .mobile-more-button svg {
+          color: #10b981;
+        }
+
+        .mobile-more-active {
+          border-color: rgba(16, 185, 129, 0.5);
+          background: rgba(16, 185, 129, 0.12);
+          color: #34d399;
+        }
+
+        .mobile-bottom-nav {
+          left: 0.75rem;
+          right: 0.75rem;
+          bottom: calc(0.7rem + env(safe-area-inset-bottom));
+          border-radius: 1.45rem;
+          padding: 0.42rem;
+        }
+
+        .mobile-bottom-button {
+          min-height: 3.05rem;
+          border-radius: 1rem;
+          font-size: 0.61rem;
+        }
+
+        .mobile-bottom-button span {
+          max-width: 3.8rem;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .cards-page,
+        .cards-layout,
+        .cards-grid {
+          gap: 0.85rem !important;
+        }
+      }
+
+      @keyframes mobileSheetIn {
+        from { opacity: 0; transform: translateY(14px) scale(0.98); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
+      }
+
+
+      .dashboard-live-hero {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid rgba(16, 185, 129, 0.18);
+        background:
+          radial-gradient(circle at 12% 20%, rgba(16, 185, 129, 0.18), transparent 30%),
+          radial-gradient(circle at 86% 10%, rgba(59, 130, 246, 0.16), transparent 34%),
+          linear-gradient(135deg, color-mix(in srgb, var(--surface) 88%, rgba(16, 185, 129, 0.06)), color-mix(in srgb, var(--surface-2) 88%, rgba(59, 130, 246, 0.06)));
+      }
+
+      .dashboard-live-emerald { border-color: rgba(16, 185, 129, 0.24); }
+      .dashboard-live-blue { border-color: rgba(59, 130, 246, 0.24); }
+      .dashboard-live-amber { border-color: rgba(245, 158, 11, 0.24); }
+      .dashboard-live-rose { border-color: rgba(244, 63, 94, 0.24); }
+
+      .dashboard-live-orb {
+        position: absolute;
+        width: 230px;
+        height: 230px;
+        border-radius: 999px;
+        filter: blur(34px);
+        opacity: 0.22;
+        pointer-events: none;
+        animation: dashboardOrbFloat 7s ease-in-out infinite;
+      }
+
+      .dashboard-live-orb-one {
+        left: -70px;
+        bottom: -105px;
+        background: #10b981;
+      }
+
+      .dashboard-live-orb-two {
+        right: -80px;
+        top: -95px;
+        background: #3b82f6;
+        animation-delay: -2s;
+      }
+
+      .dashboard-live-pill {
+        background: rgba(16, 185, 129, 0.12);
+        border: 1px solid rgba(16, 185, 129, 0.24);
+        color: #34d399;
+      }
+
+      .dashboard-live-pill-soft {
+        background: color-mix(in srgb, var(--surface-2) 78%, rgba(148, 163, 184, 0.16));
+        border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+      }
+
+      .dashboard-live-stat {
+        background: rgba(255, 255, 255, 0.045);
+        border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+        backdrop-filter: blur(12px);
+      }
+
+      .theme-light .dashboard-live-stat {
+        background: rgba(255, 255, 255, 0.72);
+      }
+
+      .dashboard-live-action {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        background: linear-gradient(135deg, #059669, #10b981);
+        color: #ffffff;
+        box-shadow: 0 16px 30px rgba(16, 185, 129, 0.2);
+        transition: transform 0.2s ease, filter 0.2s ease;
+      }
+
+      .dashboard-live-action:hover { transform: translateY(-2px); filter: brightness(1.04); }
+
+      .dashboard-live-action-soft {
+        background: color-mix(in srgb, var(--surface) 84%, rgba(16, 185, 129, 0.12));
+        color: var(--text);
+        border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+        box-shadow: none;
+      }
+
+      .dashboard-radar-card {
+        background: color-mix(in srgb, var(--surface) 78%, rgba(15, 23, 42, 0.08));
+        border: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+        backdrop-filter: blur(14px);
+      }
+
+      .dashboard-radar-icon,
+      .dashboard-radar-item-icon,
+      .dashboard-focus-icon,
+      .dashboard-timeline-day {
+        background: rgba(16, 185, 129, 0.12);
+        color: #10b981;
+      }
+
+      .dashboard-radar-item {
+        border: 1px solid color-mix(in srgb, var(--border) 64%, transparent);
+        background: color-mix(in srgb, var(--surface-2) 80%, transparent);
+      }
+
+      .dashboard-radar-positive .dashboard-radar-item-icon {
+        background: rgba(16, 185, 129, 0.14);
+        color: #10b981;
+      }
+
+      .dashboard-focus-card {
+        min-height: 182px;
+      }
+
+      .dashboard-focus-card:hover .dashboard-focus-icon {
+        transform: scale(1.04) rotate(-2deg);
+      }
+
+      .dashboard-focus-icon {
+        transition: transform 0.2s ease;
+      }
+
+      .dashboard-focus-progress {
+        background: rgba(148, 163, 184, 0.18);
+      }
+
+      .dashboard-focus-progress > div {
+        background: linear-gradient(90deg, #10b981, #3b82f6);
+      }
+
+      .dashboard-timeline-day strong {
+        line-height: 1;
+        font-size: 0.95rem;
+      }
+
+      .dashboard-timeline-day span {
+        margin-top: 0.1rem;
+        font-size: 0.58rem;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      @keyframes dashboardOrbFloat {
+        0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+        50% { transform: translate3d(10px, -12px, 0) scale(1.08); }
+      }
+
+      @media (max-width: 640px) {
+        .dashboard-live-hero { border-radius: 1.7rem; padding: 1rem; }
+        .dashboard-live-hero h2 { font-size: 1.55rem; }
+        .dashboard-live-action { width: 100%; }
+        .dashboard-radar-card { border-radius: 1.4rem; }
+        .dashboard-focus-card { min-height: auto; border-radius: 1.35rem; }
+      }
+
+
+      /* Polimento Mobile/PWA final: altera apenas telas pequenas */
+      .mobile-card-picker { display: none; }
+
+      @media (max-width: 768px) {
+        .mobile-dashboard-flow {
+          display: flex !important;
+          flex-direction: column !important;
+        }
+
+        .dashboard-live-hero { order: 2; }
+        .monthly-summary-card { order: 1; }
+        .dashboard-metrics-grid { order: 3; grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+        .dashboard-focus-grid { order: 4; grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+        .dashboard-secondary-row { order: 5; }
+        .dashboard-charts-row { order: 6; }
+        .dashboard-comparison-row { order: 7; }
+
+        .monthly-summary-card {
+          padding: 0.85rem !important;
+        }
+
+        .monthly-summary-card .interactive-row {
+          padding: 0.8rem !important;
+          gap: 0.75rem !important;
+        }
+
+        .monthly-summary-card h2 {
+          font-size: 1.05rem !important;
+        }
+
+        .monthly-summary-card p {
+          font-size: 0.72rem !important;
+          line-height: 1.2rem !important;
+        }
+
+        .monthly-summary-card .grid.sm\:grid-cols-3 {
+          grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+          gap: 0.45rem !important;
+        }
+
+        .monthly-summary-card .grid.sm\:grid-cols-3 .transaction-row,
+        .monthly-summary-card .grid.sm\:grid-cols-3 > div {
+          padding: 0.65rem !important;
+        }
+
+        .monthly-summary-backdrop {
+          align-items: flex-end !important;
+          justify-content: center !important;
+          padding: 0 !important;
+        }
+
+        .monthly-summary-modal {
+          width: 100% !important;
+          max-width: none !important;
+          height: calc(94dvh - env(safe-area-inset-top)) !important;
+          max-height: none !important;
+          border-radius: 1.65rem 1.65rem 0 0 !important;
+          animation: mobileSheetIn .2s ease both;
+        }
+
+        .monthly-summary-modal .edit-modal-hero {
+          padding: 1rem !important;
+        }
+
+        .monthly-summary-modal .edit-modal-hero h2 {
+          font-size: 1.35rem !important;
+        }
+
+        .monthly-summary-modal .edit-modal-hero p {
+          font-size: 0.78rem !important;
+          line-height: 1.35rem !important;
+        }
+
+        .monthly-summary-modal .edit-modal-content {
+          padding: 0.85rem !important;
+        }
+
+        .monthly-summary-modal .edit-modal-content > .grid.sm\:grid-cols-4 {
+          grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        }
+
+        .monthly-summary-modal .edit-modal-footer {
+          padding: 0.75rem 0.85rem calc(0.75rem + env(safe-area-inset-bottom)) !important;
+        }
+
+        .monthly-summary-modal .edit-modal-footer button {
+          width: 100%;
+          min-height: 2.7rem;
+        }
+
+        .dashboard-live-hero {
+          padding: 0.95rem !important;
+        }
+
+        .dashboard-live-hero .dashboard-radar-card {
+          padding: 0.8rem !important;
+        }
+
+        .dashboard-live-hero .dashboard-live-stat {
+          padding: 0.75rem !important;
+        }
+
+        .dashboard-live-hero .dashboard-live-stat strong {
+          font-size: 1.15rem !important;
+        }
+
+        .dashboard-focus-card {
+          padding: 0.82rem !important;
+          min-height: 8.5rem !important;
+        }
+
+        .dashboard-focus-card .dashboard-focus-icon {
+          width: 2.15rem !important;
+          height: 2.15rem !important;
+          border-radius: 0.9rem !important;
+        }
+
+        .dashboard-focus-card strong {
+          font-size: 1rem !important;
+        }
+
+        .dashboard-focus-card .muted-text:last-child {
+          display: -webkit-box;
+          -webkit-line-clamp: 2;
+          -webkit-box-orient: vertical;
+          overflow: hidden;
+        }
+
+        .dashboard-charts-row,
+        .dashboard-comparison-row {
+          margin-top: 0.1rem;
+        }
+
+        .dashboard-charts-row .recharts-responsive-container,
+        .dashboard-comparison-row .recharts-responsive-container {
+          min-height: 220px !important;
+        }
+
+        .mobile-card-picker {
+          display: block;
+        }
+
+        .cards-page-layout {
+          grid-template-columns: 1fr !important;
+        }
+
+        .cards-page-layout .card-list-panel {
+          display: none !important;
+        }
+
+        .cards-page-layout aside {
+          position: static !important;
+          top: auto !important;
+        }
+
+        .cards-page-layout aside > section:not(.card-list-panel) {
+          padding: 0.85rem !important;
+        }
+
+        .cards-page-layout aside > section:not(.card-list-panel) form {
+          gap: 0.65rem !important;
+        }
+
+        .cards-page-layout .xl\:min-w-\[520px\] {
+          min-width: 0 !important;
+        }
+
+        .cards-page-layout .sm\:grid-cols-3 {
+          grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+          gap: 0.45rem !important;
+        }
+
+        .cards-page-layout .md\:grid-cols-5,
+        .cards-page-layout .md\:grid-cols-4 {
+          grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        }
+
+        .cards-page-layout .max-h-\[360px\],
+        .cards-page-layout .max-h-\[520px\] {
+          max-height: none !important;
+        }
+
+        .mobile-action-sheet {
+          bottom: calc(5.9rem + env(safe-area-inset-bottom)) !important;
+        }
+
+        .mobile-action-option {
+          justify-content: flex-start !important;
+          padding: 0 0.85rem !important;
+        }
+
+        .mobile-bottom-button:nth-child(2) {
+          background: color-mix(in srgb, #10b981 18%, var(--surface-2));
+          color: #10b981;
+        }
+
+        .mobile-bottom-button:nth-child(2).mobile-bottom-active {
+          background: linear-gradient(135deg, #059669, #10b981);
+          color: #ffffff;
+        }
+      }
+
         ::-webkit-scrollbar {
   width: 8px;
 }
