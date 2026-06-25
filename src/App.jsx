@@ -2575,6 +2575,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
   const [editCardForm, setEditCardForm] = useState(emptyCardForm);
   const [selectedTransaction, setSelectedTransaction] = useState(null);
   const [mobileQuickActionsOpen, setMobileQuickActionsOpen] = useState(false);
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [preferencesForm, setPreferencesForm] = useState({ monthly_income: "", main_goal: "", currency: "BRL", default_theme: "system" });
@@ -4688,8 +4689,8 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     { key: "account", label: "Conta", icon: <UserRound size={17} /> },
   ];
 
-  const primaryTabKeys = ["dashboard", "transactions", "cards", "payments", "reports"];
-  const moreTabKeys = ["annual", "recurring", "goals", "limits", "calendar", "account"];
+  const primaryTabKeys = ["dashboard", "transactions", "cards", "payments", "recurring"];
+  const moreTabKeys = ["annual", "reports", "goals", "limits", "calendar", "account"];
   const primaryTabs = primaryTabKeys.map((key) => tabs.find((tab) => tab.key === key)).filter(Boolean);
   const moreTabs = moreTabKeys.map((key) => tabs.find((tab) => tab.key === key)).filter(Boolean);
   const isMoreMenuActive = moreTabs.some((tab) => tab.key === page);
@@ -4697,7 +4698,17 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
   function navigateDashboardTab(key) {
     setMoreMenuOpen(false);
     setAccountMenuOpen(false);
+    setMobileMoreOpen(false);
+    setMobileQuickActionsOpen(false);
     setPage(key);
+  }
+
+  function updateMobileMoreOpen(value) {
+    const nextValue = typeof value === "function" ? value(mobileMoreOpen) : value;
+    setMobileMoreOpen(Boolean(nextValue));
+    if (nextValue) {
+      setMobileQuickActionsOpen(false);
+    }
   }
 
   function openTransactionsWithFilters({ categories = ["Todas"], types = ["all"], cards = ["all"], date = "", search = "", sort = "recent" } = {}) {
@@ -4837,12 +4848,14 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
 
       <ToastCustom toast={toast} onClose={hideToast} />
       <ConfirmModal modal={confirmModal} onClose={closeConfirmModal} />
-      <MobileQuickActionFab
-        open={mobileQuickActionsOpen}
-        setOpen={setMobileQuickActionsOpen}
-        onAction={handleMobileQuickAction}
-        page={page}
-      />
+      {!mobileMoreOpen && (
+        <MobileQuickActionFab
+          open={mobileQuickActionsOpen}
+          setOpen={setMobileQuickActionsOpen}
+          onAction={handleMobileQuickAction}
+          page={page}
+        />
+      )}
 
       <header className="dashboard-header dashboard-header-premium surface-card rounded-[2rem] p-4 shadow-sm">
         <div className="dashboard-brand dashboard-brand-premium">
@@ -5121,7 +5134,13 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
         />
       )}
 
-      <MobileBottomNav tabs={tabs} page={page} setPage={setPage} />
+      <MobileBottomNav
+        tabs={tabs}
+        page={page}
+        setPage={setPage}
+        moreOpen={mobileMoreOpen}
+        setMoreOpen={updateMobileMoreOpen}
+      />
     </div>
   );
 }
@@ -5584,20 +5603,21 @@ function MobileQuickActionFab({ open, setOpen, onAction, page = "dashboard" }) {
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className={classNames("mobile-fab-button", open && "mobile-fab-open")}
-        aria-label={open ? "Fechar ações rápidas" : "Abrir ações rápidas"}
-      >
-        {open ? <X size={24} /> : <Plus size={25} />}
-      </button>
+      {!open && (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="mobile-fab-button"
+          aria-label="Abrir ações rápidas"
+        >
+          <Plus size={25} />
+        </button>
+      )}
     </>
   );
 }
 
-function MobileBottomNav({ tabs, page, setPage }) {
-  const [moreOpen, setMoreOpen] = useState(false);
+function MobileBottomNav({ tabs, page, setPage, moreOpen = false, setMoreOpen = () => {} }) {
   const mainKeys = ["dashboard", "transactions", "cards", "payments"];
   const mainTabs = tabs.filter((tab) => mainKeys.includes(tab.key));
   const moreTabs = tabs.filter((tab) => !mainKeys.includes(tab.key));
@@ -10565,6 +10585,93 @@ function GlobalStyles() {
           min-height: 2rem !important;
           font-size: 0.72rem !important;
           border-radius: 0.8rem !important;
+        }
+
+        .dashboard-header-premium {
+          gap: 0.7rem !important;
+          padding: 0.82rem !important;
+        }
+
+        .dashboard-brand-premium {
+          width: 100%;
+        }
+
+        .dashboard-actions-premium {
+          width: 100% !important;
+          margin-left: 0 !important;
+          display: grid !important;
+          grid-template-columns: minmax(0, 1fr) 2.5rem 2.5rem;
+          gap: 0.45rem !important;
+          align-items: center;
+        }
+
+        .dashboard-actions-premium .theme-button,
+        .dashboard-actions-premium .account-menu-button {
+          width: 2.5rem !important;
+          height: 2.5rem !important;
+          min-height: 2.5rem !important;
+          padding: 0 !important;
+          justify-content: center !important;
+          border-radius: 1rem !important;
+          border: 1px solid color-mix(in srgb, var(--border) 85%, transparent) !important;
+          background: color-mix(in srgb, var(--surface-2) 92%, transparent) !important;
+          color: var(--text) !important;
+          box-shadow: none !important;
+          font-size: 0 !important;
+        }
+
+        .dashboard-actions-premium .theme-button:hover,
+        .dashboard-actions-premium .account-menu-button:hover {
+          background: color-mix(in srgb, var(--surface-2) 78%, rgba(16, 185, 129, 0.14)) !important;
+          border-color: rgba(16, 185, 129, 0.35) !important;
+          color: #34d399 !important;
+        }
+
+        .dashboard-actions-premium .theme-button svg,
+        .dashboard-actions-premium .account-menu-button svg {
+          width: 1.05rem !important;
+          height: 1.05rem !important;
+          margin: 0 !important;
+        }
+
+        .dashboard-actions-premium .month-selector {
+          min-width: 0 !important;
+          width: 100% !important;
+          max-width: none !important;
+          padding: 0.3rem !important;
+          gap: 0.22rem !important;
+          border-radius: 1rem !important;
+        }
+
+        .dashboard-actions-premium .month-selector-center {
+          min-width: 0;
+          flex: 1 1 auto;
+          justify-content: center;
+          gap: 0.22rem;
+          padding-inline: 0.18rem;
+        }
+
+        .dashboard-actions-premium .month-nav-button {
+          width: 1.65rem !important;
+          height: 1.8rem !important;
+          border-radius: 0.75rem !important;
+          font-size: 1.1rem !important;
+        }
+
+        .dashboard-actions-premium .month-select {
+          width: auto !important;
+          max-width: 4.8rem !important;
+        }
+
+        .dashboard-actions-premium .year-select {
+          width: 3.45rem !important;
+        }
+
+        .dashboard-actions-premium .month-select,
+        .dashboard-actions-premium .year-select {
+          min-height: 1.95rem !important;
+          font-size: 0.75rem !important;
+          border-radius: 0.75rem !important;
         }
 
         .dashboard-tabs {
