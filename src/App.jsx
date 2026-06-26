@@ -53,6 +53,8 @@ import {
 } from "recharts";
 
 const THEME_KEY = "controle-financeiro-theme";
+const ACCENT_KEY = "controle-financeiro-accent";
+const DENSITY_KEY = "controle-financeiro-density";
 const EMAIL_CONFIRMATION_TARGET_KEY = "controle-financeiro-email-confirmation-target";
 const PASSWORD_RECOVERY_TARGET_KEY = "controle-financeiro-password-recovery-target";
 const MINIMUM_LOADING_TIME_MS = 1500;
@@ -95,6 +97,19 @@ const paymentMethods = [
 ];
 
 const cardTypes = ["Crédito", "Débito", "Crédito e Débito", "Alimentação", "Refeição", "Benefício", "Vale transporte", "Pré-pago", "Outro"];
+
+const accentOptions = [
+  { value: "emerald", label: "Verde", color: "#10b981" },
+  { value: "blue", label: "Azul", color: "#3b82f6" },
+  { value: "violet", label: "Roxo", color: "#8b5cf6" },
+  { value: "cyan", label: "Ciano", color: "#06b6d4" },
+  { value: "amber", label: "Âmbar", color: "#f59e0b" },
+];
+
+const densityOptions = [
+  { value: "comfortable", label: "Confortável", helper: "Mais respiro nos cards e formulários." },
+  { value: "compact", label: "Compacto", helper: "Menos altura e mais informação na tela." },
+];
 
 const recurrenceTypes = [
   { value: "monthly", label: "Mensal", helper: "Todo mês no dia escolhido" },
@@ -403,6 +418,54 @@ function monthLabel(monthValue) {
   const [year, month] = monthValue.split("-");
   const label = monthOptions.find((item) => item.value === month)?.label || month;
   return `${label} de ${year}`;
+}
+
+function isValidMonthValue(value) {
+  if (typeof value !== "string") return false;
+  const match = value.match(/^(\d{4})-(\d{2})$/);
+  if (!match) return false;
+  const month = Number(match[2]);
+  return month >= 1 && month <= 12;
+}
+
+function ensureMonthValue(value) {
+  return isValidMonthValue(value) ? value : getCurrentMonth();
+}
+
+function safeMonthLabel(monthValue) {
+  return monthLabel(ensureMonthValue(monthValue));
+}
+
+function getErrorMessage(error) {
+  if (!error) return "Erro inesperado.";
+  if (typeof error === "string") return error;
+  return error.message || error.error_description || error.details || "Erro inesperado.";
+}
+
+const dashboardPageAliases = {
+  profile: "account",
+  settings: "account",
+  config: "account",
+  configuration: "account",
+};
+
+const dashboardAllowedPages = new Set([
+  "dashboard",
+  "annual",
+  "recurring",
+  "transactions",
+  "payments",
+  "cards",
+  "goals",
+  "limits",
+  "calendar",
+  "reports",
+  "account",
+]);
+
+function normalizeDashboardPage(page) {
+  const normalized = dashboardPageAliases[page] || page;
+  return dashboardAllowedPages.has(normalized) ? normalized : "dashboard";
 }
 
 function normalizeTransaction(row) {
@@ -857,6 +920,24 @@ export default function ControleFinanceiroCompleto() {
     }
   });
 
+  const [accentColor, setAccentColor] = useState(() => {
+    try {
+      const storedAccent = localStorage.getItem(ACCENT_KEY);
+      return accentOptions.some((item) => item.value === storedAccent) ? storedAccent : "emerald";
+    } catch {
+      return "emerald";
+    }
+  });
+
+  const [densityMode, setDensityMode] = useState(() => {
+    try {
+      const storedDensity = localStorage.getItem(DENSITY_KEY);
+      return densityOptions.some((item) => item.value === storedDensity) ? storedDensity : "comfortable";
+    } catch {
+      return "comfortable";
+    }
+  });
+
   const [authLoading, setAuthLoading] = useState(true);
   const [minimumLoadingDone, setMinimumLoadingDone] = useState(false);
   const [session, setSession] = useState(null);
@@ -913,6 +994,24 @@ export default function ControleFinanceiroCompleto() {
     document.body.style.backgroundColor = darkMode ? "#020617" : "#f1f5f9";
     document.body.style.color = darkMode ? "#f8fafc" : "#020617";
   }, [darkMode]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ACCENT_KEY, accentColor);
+      document.documentElement.dataset.accent = accentColor;
+    } catch {
+      // ignore storage errors
+    }
+  }, [accentColor]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(DENSITY_KEY, densityMode);
+      document.documentElement.dataset.density = densityMode;
+    } catch {
+      // ignore storage errors
+    }
+  }, [densityMode]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1100,7 +1199,7 @@ export default function ControleFinanceiroCompleto() {
 
   if (authLoading || !minimumLoadingDone) {
     return (
-      <AppFrame darkMode={darkMode}>
+      <AppFrame darkMode={darkMode} accentColor={accentColor} densityMode={densityMode}>
         <LoadingScreen
           title="Controle Financeiro"
           subtitle="Verificando sua sessão e preparando o ambiente..."
@@ -1110,7 +1209,7 @@ export default function ControleFinanceiroCompleto() {
   }
 
   return (
-    <AppFrame darkMode={darkMode}>
+    <AppFrame darkMode={darkMode} accentColor={accentColor} densityMode={densityMode}>
       {screen === "home" && (
         <HomePage
           darkMode={darkMode}
@@ -1143,13 +1242,19 @@ export default function ControleFinanceiroCompleto() {
       )}
 
       {screen === "dashboard" && session && (
-        <Dashboard
-          darkMode={darkMode}
-          setDarkMode={setDarkMode}
-          session={session}
-          onSignOut={handleSignOut}
-          onHome={() => setScreen("home")}
-        />
+        <AppErrorBoundary resetKey={session?.user?.id || "dashboard"}>
+          <Dashboard
+            darkMode={darkMode}
+            setDarkMode={setDarkMode}
+            accentColor={accentColor}
+            setAccentColor={setAccentColor}
+            densityMode={densityMode}
+            setDensityMode={setDensityMode}
+            session={session}
+            onSignOut={handleSignOut}
+            onHome={() => setScreen("home")}
+          />
+        </AppErrorBoundary>
       )}
 
       {screen === "dashboard" && !session && (
@@ -1208,13 +1313,58 @@ function LoadingScreen({
   );
 }
 
-function AppFrame({ darkMode, children }) {
+function AppFrame({ darkMode, accentColor = "emerald", densityMode = "comfortable", children }) {
   return (
-    <div className={classNames("app-shell min-h-screen antialiased transition-colors duration-300", darkMode ? "theme-dark" : "theme-light")}>
+    <div className={classNames("app-shell min-h-screen antialiased transition-colors duration-300", darkMode ? "theme-dark" : "theme-light", `accent-${accentColor}`, `density-${densityMode}`)}>
       {children}
       <GlobalStyles />
     </div>
   );
+}
+
+class AppErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidUpdate(previousProps) {
+    if (previousProps.resetKey !== this.props.resetKey && this.state.hasError) {
+      this.setState({ hasError: false, error: null });
+    }
+  }
+
+  render() {
+    if (!this.state.hasError) return this.props.children;
+
+    return (
+      <div className="mx-auto flex min-h-screen w-full max-w-3xl items-center justify-center px-4 py-10">
+        <div className="surface-card rounded-[2rem] p-6 text-center shadow-sm">
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-rose-500/10 text-rose-400">
+            <X size={24} />
+          </div>
+          <h1 className="text-2xl font-black">Não foi possível carregar esta tela</h1>
+          <p className="muted-text mx-auto mt-3 max-w-xl text-sm leading-7">
+            O painel encontrou um erro inesperado. Atualize a página e tente novamente. Se continuar, volte para a versão anterior do App.jsx e me envie a mensagem abaixo.
+          </p>
+          <p className="mt-4 rounded-2xl bg-rose-500/10 px-4 py-3 text-sm font-bold text-rose-300">
+            {getErrorMessage(this.state.error)}
+          </p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-5 rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-black text-white transition hover:bg-emerald-700"
+          >
+            Recarregar página
+          </button>
+        </div>
+      </div>
+    );
+  }
 }
 
 function HomePage({ darkMode, setDarkMode, session, onStart, onLogin, onDashboard, onDemo }) {
@@ -2493,7 +2643,7 @@ function AuthScreen({ mode, setMode, onBack, onSuccess, systemMessage }) {
   );
 }
 
-function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
+function Dashboard({ darkMode, setDarkMode, accentColor, setAccentColor, densityMode, setDensityMode, session, onSignOut, onHome }) {
   const user = session.user;
   const userName = user?.user_metadata?.name || user?.email?.split("@")[0] || "usuário";
 
@@ -2727,7 +2877,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
         default_theme: normalizedPreferences.default_theme || "system",
       });
     } catch (error) {
-      showToast(`Erro ao carregar dados: ${error.message}. Confira se o SQL completo foi executado no Supabase.`);
+      showToast(`Erro ao carregar dados: ${getErrorMessage(error)}. Confira se o SQL completo foi executado no Supabase.`);
     } finally {
       setLoadingData(false);
     }
@@ -2913,28 +3063,24 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     return { income, expense, balance: income - expense, bestMonth, worstMonth, averageSaving: Math.round((income - expense) / 12) };
   }, [annualMonthlyData]);
 
-  const smartInsights = useMemo(() => {
-    const insights = [];
-    if (summary.expense > previousSummary.expense && previousSummary.expense > 0) {
-      const diff = summary.expense - previousSummary.expense;
-      const percent = Math.round((diff / previousSummary.expense) * 100);
-      insights.push(`Você gastou ${percent}% a mais que no mês anterior (${money.format(diff)}).`);
-    }
-    if (summary.expense < previousSummary.expense && previousSummary.expense > 0) {
-      const diff = previousSummary.expense - summary.expense;
-      insights.push(`Você economizou ${money.format(diff)} em despesas comparado ao mês anterior.`);
-    }
-    if (topExpenses[0]) insights.push(`Seu maior gasto do mês foi ${topExpenses[0].description}, no valor de ${money.format(topExpenses[0].amount)}.`);
-    const incomeBaseForInsight = Number(summary.income || preferences?.monthly_income || 0);
-    if (incomeBaseForInsight > 0 && topExpenses[0] && Number(topExpenses[0].amount) / incomeBaseForInsight >= 0.2) {
-      insights.push(`Atenção: seu maior gasto representa ${Math.round((Number(topExpenses[0].amount) / incomeBaseForInsight) * 100)}% da sua renda/base mensal.`);
-    }
-    if (categoryUsage.some((item) => item.exceeded)) insights.push(`Há categorias acima do limite: ${categoryUsage.filter((item) => item.exceeded).map((item) => item.category).join(", ")}.`);
-    const closeGoal = goals.find((goal) => goal.target_amount > 0 && goal.current_amount / goal.target_amount >= 0.8 && goal.current_amount < goal.target_amount);
-    if (closeGoal) insights.push(`Você está perto de concluir a meta "${closeGoal.title}".`);
-    if (!insights.length) insights.push("Cadastre mais lançamentos para receber insights automáticos sobre sua rotina financeira.");
-    return insights.slice(0, 4);
-  }, [summary, previousSummary, topExpenses, categoryUsage, goals, preferences]);
+  const smartInsights = useMemo(
+    () =>
+      buildMonthlyInsights({
+        summary,
+        previousSummary,
+        expenseByCategory,
+        topExpenses,
+        categoryUsage,
+        goals,
+        preferences,
+        cardUsage,
+        recurringItems,
+        paymentAllocations,
+        monthTransactions,
+        selectedMonth,
+      }),
+    [summary, previousSummary, expenseByCategory, topExpenses, categoryUsage, goals, preferences, cardUsage, recurringItems, paymentAllocations, monthTransactions, selectedMonth]
+  );
 
   const financialNotifications = useMemo(() => {
     const notifications = [];
@@ -3243,7 +3389,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
       resetTransactionForm();
       await loadAllData();
     } catch (error) {
-      showToast(`Erro ao salvar lançamento: ${error.message}`);
+      showToast(`Erro ao salvar lançamento: ${getErrorMessage(error)}`);
     }
   }
 
@@ -3310,7 +3456,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
       showToast("Lançamento atualizado com sucesso.");
       await loadAllData();
     } catch (error) {
-      showToast(`Erro ao atualizar lançamento: ${error.message}`);
+      showToast(`Erro ao atualizar lançamento: ${getErrorMessage(error)}`);
     }
   }
 
@@ -3415,7 +3561,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
       setGoalForm(emptyGoalForm);
       await loadAllData();
     } catch (error) {
-      showToast(`Erro ao salvar meta: ${error.message}`);
+      showToast(`Erro ao salvar meta: ${getErrorMessage(error)}`);
     }
   }
 
@@ -3782,7 +3928,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
         return;
       }
 
-      showToast(`${count} ocorrência(s) fixa(s) sincronizada(s) em ${monthLabel(selectedMonth)}.`, "success");
+      showToast(`${count} ocorrência(s) fixa(s) sincronizada(s) em ${safeMonthLabel(selectedMonth)}.`, "success");
       await loadAllData();
     } catch (error) {
       showToast(`Erro ao sincronizar fixos: ${error.message}`, "error");
@@ -4007,25 +4153,38 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     });
   }
 
-  async function savePreferences(event) {
-    event.preventDefault();
+  async function savePreferences(event, options = {}) {
+    event?.preventDefault?.();
+
     try {
+      const shouldCompleteOnboarding = options.completeOnboarding ?? true;
       const payload = {
         user_id: user.id,
         monthly_income: toNumber(preferencesForm.monthly_income) || 0,
         main_goal: preferencesForm.main_goal || null,
         currency: preferencesForm.currency || "BRL",
         default_theme: preferencesForm.default_theme || "system",
-        onboarding_completed: true,
+        onboarding_completed: shouldCompleteOnboarding ? true : Boolean(preferences?.onboarding_completed),
         updated_at: new Date().toISOString(),
       };
+
       const { error } = await supabase.from("user_preferences").upsert(payload, { onConflict: "user_id" });
       if (error) throw error;
-      showToast("Preferências salvas com sucesso.");
+
+      showToast(options.successMessage || "Preferências salvas com sucesso.", "success");
       await loadAllData();
+      return true;
     } catch (error) {
-      showToast(`Erro ao salvar preferências: ${error.message}`);
+      showToast(`Erro ao salvar preferências: ${getErrorMessage(error)}`, "error");
+      return false;
     }
+  }
+
+  async function skipOnboarding() {
+    return savePreferences(null, {
+      completeOnboarding: true,
+      successMessage: "Configuração inicial pulada. Você pode ajustar tudo depois em Conta.",
+    });
   }
 
   function exportBackup() {
@@ -4285,7 +4444,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
 
       const resumoRows = [
         ["Controle Financeiro"],
-        ["Período", monthLabel(selectedMonth)],
+        ["Período", safeMonthLabel(selectedMonth)],
         ["Usuário", userName],
         ["Gerado em", generatedAt.toLocaleDateString("pt-BR")],
         ["Horário", generatedAt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })],
@@ -4527,7 +4686,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     const html = `
       <html>
         <head>
-          <title>Relatório ${monthLabel(selectedMonth)}</title>
+          <title>Relatório ${safeMonthLabel(selectedMonth)}</title>
           <style>
             * { box-sizing: border-box; }
             body { margin: 0; font-family: Arial, sans-serif; background: #eef3f7; color: #0f172a; padding: 28px; }
@@ -4579,7 +4738,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
                 <img class="logo" src="${window.location.origin}/logo-email.png" />
                 <div>
                   <h1>Relatório Financeiro</h1>
-                  <p class="subtitle">${monthLabel(selectedMonth)} · ${escapeHtml(userName)}</p>
+                  <p class="subtitle">${safeMonthLabel(selectedMonth)} · ${escapeHtml(userName)}</p>
                 </div>
               </div>
               <div style="text-align:right">
@@ -4694,13 +4853,43 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
   const primaryTabs = primaryTabKeys.map((key) => tabs.find((tab) => tab.key === key)).filter(Boolean);
   const moreTabs = moreTabKeys.map((key) => tabs.find((tab) => tab.key === key)).filter(Boolean);
   const isMoreMenuActive = moreTabs.some((tab) => tab.key === page);
+  const currentTab = tabs.find((tab) => tab.key === page) || tabs[0];
+  const headerBalanceLabel = summary.balance >= 0 ? "Saldo positivo" : "Saldo negativo";
+
+  useEffect(() => {
+    const normalizedPage = normalizeDashboardPage(page);
+    if (normalizedPage !== page) {
+      setPage(normalizedPage);
+    }
+  }, [page]);
+
+  useEffect(() => {
+    function closeFloatingMenus(event) {
+      if (event.key !== "Escape") return;
+      setMoreMenuOpen(false);
+      setAccountMenuOpen(false);
+      setMobileMoreOpen(false);
+      setMobileQuickActionsOpen(false);
+    }
+
+    window.addEventListener("keydown", closeFloatingMenus);
+    return () => window.removeEventListener("keydown", closeFloatingMenus);
+  }, []);
+
+  function handleSelectedMonthChange(nextMonth) {
+    setMoreMenuOpen(false);
+    setAccountMenuOpen(false);
+    setMobileMoreOpen(false);
+    setMobileQuickActionsOpen(false);
+    setSelectedMonth(ensureMonthValue(nextMonth));
+  }
 
   function navigateDashboardTab(key) {
     setMoreMenuOpen(false);
     setAccountMenuOpen(false);
     setMobileMoreOpen(false);
     setMobileQuickActionsOpen(false);
-    setPage(key);
+    setPage(normalizeDashboardPage(key));
   }
 
   function updateMobileMoreOpen(value) {
@@ -4725,7 +4914,7 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
     setSelectedMonth(monthValue);
     setDateFilter("");
     setPage("dashboard");
-    showToast(`Painel de ${monthLabel(monthValue)} aberto.`, "info");
+    showToast(`Painel de ${safeMonthLabel(monthValue)} aberto.`, "info");
   }
 
   function scrollToNewTransactionForm() {
@@ -4857,27 +5046,66 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
         />
       )}
 
-      <header className="dashboard-header dashboard-header-premium surface-card rounded-[2rem] p-4 shadow-sm">
-        <div className="dashboard-brand dashboard-brand-premium">
-          <img src={logoEA} alt="Logo" className="dashboard-logo dashboard-logo-premium h-9 w-9 rounded-xl object-cover" />
+      <header className="dashboard-unified-topbar surface-card" aria-label="Topo e navegação principal">
+        <div className="dashboard-unified-brand">
+          <img src={logoEA} alt="Logo" className="dashboard-unified-logo object-cover" />
           <div className="min-w-0">
-            <div className="dashboard-title-row">
-              <h1 className="dashboard-title dashboard-title-premium">Controle Financeiro</h1>
-            </div>
+            <h1 className="dashboard-unified-title">Controle Financeiro</h1>
           </div>
         </div>
 
-        <div className="dashboard-actions dashboard-actions-premium">
-          <MonthSelector value={selectedMonth} onChange={setSelectedMonth} years={availableYears} />
-          <button
-            onClick={() => setDarkMode((value) => !value)}
-            className="theme-button header-icon-button dashboard-action-button inline-flex items-center gap-2 rounded-2xl px-3 py-2 text-sm font-bold transition hover:scale-[1.02]"
-            title={darkMode ? "Ativar modo claro" : "Ativar modo escuro"}
-          >
-            {darkMode ? <Sun size={16} /> : <Moon size={16} />}
-            <span>{darkMode ? "Claro" : "Escuro"}</span>
-          </button>
+        <nav className="dashboard-unified-nav" aria-label="Menu principal do painel">
+          {primaryTabs.map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => navigateDashboardTab(tab.key)}
+              className={classNames("dashboard-tab-button dashboard-unified-tab inline-flex items-center justify-center gap-2 rounded-2xl px-3 py-2 text-sm font-black transition", page === tab.key ? "dashboard-tab-active" : "ghost-button")}
+            >
+              {tab.icon} <span>{tab.label}</span>
+            </button>
+          ))}
 
+          <div className="dashboard-more-menu">
+            <button
+              type="button"
+              onClick={() => {
+                setAccountMenuOpen(false);
+                setMoreMenuOpen((value) => !value);
+              }}
+              className={classNames("dashboard-tab-button dashboard-unified-tab inline-flex items-center justify-center gap-2 rounded-2xl px-3 py-2 text-sm font-black transition", isMoreMenuActive || moreMenuOpen ? "dashboard-tab-active" : "ghost-button")}
+              aria-haspopup="menu"
+              aria-expanded={moreMenuOpen}
+            >
+              <ListFilter size={17} /> <span>Mais</span> <span className="text-xs">▾</span>
+            </button>
+
+            {moreMenuOpen && (
+              <div className="dashboard-more-panel" role="menu">
+                <div className="dashboard-more-header">
+                  <strong>Mais opções</strong>
+                  <span>Planejamento, ajustes e visão anual</span>
+                </div>
+                <div className="dashboard-more-grid">
+                  {moreTabs.map((tab) => (
+                    <button
+                      key={tab.key}
+                      type="button"
+                      onClick={() => navigateDashboardTab(tab.key)}
+                      className={classNames("dashboard-more-item", page === tab.key && "dashboard-more-item-active")}
+                      role="menuitem"
+                    >
+                      {tab.icon}
+                      <span>{tab.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </nav>
+
+        <div className="dashboard-unified-actions">
+          <MonthSelector value={selectedMonth} onChange={handleSelectedMonthChange} years={availableYears} />
           <div className="dashboard-account-menu">
             <button
               type="button"
@@ -4903,6 +5131,19 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
                 </div>
                 <button type="button" onClick={() => navigateDashboardTab("account")} className="account-menu-item" role="menuitem">
                   <UserRound size={16} /> Minha conta
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigateDashboardTab("account");
+                    window.setTimeout(() => {
+                      document.getElementById("appearance-settings")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                    }, 180);
+                  }}
+                  className="account-menu-item"
+                  role="menuitem"
+                >
+                  <Settings size={16} /> Aparência
                 </button>
                 <button
                   type="button"
@@ -4939,55 +5180,21 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
         </div>
       </header>
 
-      <nav className="dashboard-tabs dashboard-tabs-compact surface-card rounded-[2rem] p-2 shadow-sm" aria-label="Menu principal do painel">
-        {primaryTabs.map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => navigateDashboardTab(tab.key)}
-            className={classNames("dashboard-tab-button inline-flex items-center justify-center gap-2 rounded-2xl px-3 py-2 text-sm font-black transition", page === tab.key ? "dashboard-tab-active" : "ghost-button")}
-          >
-            {tab.icon} <span>{tab.label}</span>
-          </button>
-        ))}
-
-        <div className="dashboard-more-menu">
-          <button
-            type="button"
-            onClick={() => setMoreMenuOpen((value) => !value)}
-            className={classNames("dashboard-tab-button inline-flex items-center justify-center gap-2 rounded-2xl px-3 py-2 text-sm font-black transition", isMoreMenuActive || moreMenuOpen ? "dashboard-tab-active" : "ghost-button")}
-            aria-haspopup="menu"
-            aria-expanded={moreMenuOpen}
-          >
-            <ListFilter size={17} /> <span>Mais</span> <span className="text-xs">▾</span>
-          </button>
-
-          {moreMenuOpen && (
-            <div className="dashboard-more-panel" role="menu">
-              <div className="dashboard-more-header">
-                <strong>Mais opções</strong>
-                <span>Planejamento, ajustes e visão anual</span>
-              </div>
-              <div className="dashboard-more-grid">
-                {moreTabs.map((tab) => (
-                  <button
-                    key={tab.key}
-                    type="button"
-                    onClick={() => navigateDashboardTab(tab.key)}
-                    className={classNames("dashboard-more-item", page === tab.key && "dashboard-more-item-active")}
-                    role="menuitem"
-                  >
-                    {tab.icon}
-                    <span>{tab.label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </nav>
-
       {preferences && !preferences.onboarding_completed && (
-        <OnboardingBanner preferencesForm={preferencesForm} setPreferencesForm={setPreferencesForm} onSubmit={savePreferences} />
+        <OnboardingBanner
+          userName={userName}
+          preferencesForm={preferencesForm}
+          setPreferencesForm={setPreferencesForm}
+          onSubmit={savePreferences}
+          onSkip={skipOnboarding}
+          onOpenPage={(targetPage) => setPage(normalizeDashboardPage(targetPage))}
+          stats={{
+            transactions: transactions.length,
+            cards: creditCards.length,
+            goals: goals.length,
+            recurring: recurringItems.length,
+          }}
+        />
       )}
 
       {financialNotifications.length > 0 && (
@@ -5120,6 +5327,12 @@ function Dashboard({ darkMode, setDarkMode, session, onSignOut, onHome }) {
           preferencesForm={preferencesForm}
           setPreferencesForm={setPreferencesForm}
           onPreferencesSubmit={savePreferences}
+          darkMode={darkMode}
+          setDarkMode={setDarkMode}
+          accentColor={accentColor}
+          setAccentColor={setAccentColor}
+          densityMode={densityMode}
+          setDensityMode={setDensityMode}
           exportBackup={exportBackup}
           importBackup={importBackup}
           deleteAllUserData={deleteAllUserData}
@@ -5165,6 +5378,9 @@ function PaymentsPage({ selectedMonth, summary, transactions, monthTransactions,
   };
 
   const [form, setForm] = useState(initialForm);
+  const [currentStep, setCurrentStep] = useState("source");
+  const [targetFilter, setTargetFilter] = useState("pending");
+  const [showNotes, setShowNotes] = useState(false);
 
   const monthAllocations = useMemo(() => {
     return paymentAllocations.filter((item) => item.payment_date?.slice(0, 7) === selectedMonth);
@@ -5201,60 +5417,82 @@ function PaymentsPage({ selectedMonth, summary, transactions, monthTransactions,
   }
 
   function update(field, value) {
-    setForm((current) => ({ ...current, [field]: value }));
+    setForm((current) => {
+      const next = { ...current, [field]: value };
+
+      if (field === "source_type") {
+        next.source_transaction_id = "";
+        next.manual_source_amount = "";
+        next.amount = "";
+      }
+
+      if (field === "target_type") {
+        next.target_transaction_id = "";
+        next.target_card_id = "";
+        next.target_goal_id = "";
+        next.manual_target_label = "";
+        next.manual_target_amount = "";
+        next.amount = "";
+      }
+
+      return next;
+    });
   }
 
   function getSelectedSource() {
     if (form.source_type === "income") {
       const income = incomeTransactions.find((item) => item.id === form.source_transaction_id);
-      if (!income) return { label: "Selecione uma receita", total: 0, available: 0 };
+      if (!income) return { label: "Selecione uma receita", total: 0, available: 0, helper: "Escolha uma entrada cadastrada no mês." };
       const used = sourceUsedByIncome(income.id);
       return {
         label: income.description,
         total: Number(income.amount || 0),
         available: Math.max(0, Number(income.amount || 0) - used),
+        helper: `${income.category} · ${formatDateBR(income.date)}`,
       };
     }
 
     if (form.source_type === "balance") {
-      return { label: "Saldo disponível do mês", total: positiveBalance, available: availableBalance };
+      return { label: "Saldo disponível do mês", total: positiveBalance, available: availableBalance, helper: "Receitas menos despesas já registradas." };
     }
 
     const manual = toNumber(form.manual_source_amount);
-    return { label: "Valor manual", total: manual || 0, available: manual || 0 };
+    return { label: "Valor manual", total: manual || 0, available: manual || 0, helper: "Informe um valor livre para registrar o pagamento." };
   }
 
   function getSelectedTarget() {
     if (form.target_type === "transaction") {
       const target = expenseTargets.find((item) => item.id === form.target_transaction_id);
-      if (!target) return { label: "Selecione uma despesa", total: 0, remaining: 0 };
+      if (!target) return { label: "Selecione uma despesa", total: 0, remaining: 0, helper: "Escolha o lançamento que deseja pagar." };
       return {
         label: target.description,
         total: Number(target.amount || 0),
         remaining: Number(target.remaining || 0),
-        extra: `${target.category}${target.cardName ? ` · ${target.cardName}` : ""}`,
+        helper: `${target.category}${target.cardName ? ` · ${target.cardName}` : ""} · ${formatDateBR(target.date)}`,
       };
     }
 
     if (form.target_type === "card") {
       const card = cardUsage.find((item) => item.id === form.target_card_id);
-      if (!card) return { label: "Selecione um cartão", total: 0, remaining: 0 };
+      if (!card) return { label: "Selecione um cartão", total: 0, remaining: 0, helper: "Escolha uma fatura ou cartão benefício." };
+      const storedValueCapacity = Number(card.card_limit || card.total_available_base || 0);
+      const storedValueMissing = Math.max(0, storedValueCapacity - Number(card.available || 0));
       return {
         label: card.name,
         total: Number(card.total_available_base || card.card_limit || 0),
-        remaining: Number(card.spent || 0),
-        extra: card.stored_value_card ? "Recarga/saldo" : "Fatura em aberto",
+        remaining: card.stored_value_card ? storedValueMissing : Number(card.spent || 0),
+        helper: card.stored_value_card ? "Recarga/saldo do cartão" : "Fatura em aberto",
       };
     }
 
     if (form.target_type === "goal") {
       const goal = goals.find((item) => item.id === form.target_goal_id);
-      if (!goal) return { label: "Selecione uma meta", total: 0, remaining: 0 };
+      if (!goal) return { label: "Selecione uma meta", total: 0, remaining: 0, helper: "Escolha uma meta para receber o valor." };
       return {
         label: goal.title,
         total: Number(goal.target_amount || 0),
         remaining: Math.max(0, Number(goal.target_amount || 0) - Number(goal.current_amount || 0)),
-        extra: "Meta financeira",
+        helper: "Meta financeira",
       };
     }
 
@@ -5263,7 +5501,7 @@ function PaymentsPage({ selectedMonth, summary, transactions, monthTransactions,
       label: form.manual_target_label || "Destino manual",
       total: manual || 0,
       remaining: manual || 0,
-      extra: "Destino informado manualmente",
+      helper: "Destino informado manualmente",
     };
   }
 
@@ -5272,15 +5510,123 @@ function PaymentsPage({ selectedMonth, summary, transactions, monthTransactions,
   const amount = toNumber(form.amount);
   const targetAfter = Math.max(0, Number(selectedTarget.remaining || 0) - Number(amount || 0));
   const canPayAll = Number(selectedTarget.remaining || 0) > 0 && Number(selectedSource.available || 0) >= Number(selectedTarget.remaining || 0);
+  const sourceReady = Number(selectedSource.available || 0) > 0;
+  const targetReady = Number(selectedTarget.remaining || 0) > 0;
+  const amountReady = Number(amount || 0) > 0 && amount <= Number(selectedSource.available || 0) && amount <= Number(selectedTarget.remaining || 0);
+  const canSubmit = sourceReady && targetReady && amountReady;
+
   const resultLabel = !amount
     ? "Informe um valor para simular."
     : targetAfter === 0
       ? "Destino quitado/pago por completo."
       : "Pagamento parcial registrado.";
 
+  const guidedSteps = [
+    { key: "source", title: "Origem", description: "De onde sai o dinheiro" },
+    { key: "target", title: "Destino", description: "O que será pago" },
+    { key: "amount", title: "Valor", description: "Quanto usar" },
+    { key: "review", title: "Confirmar", description: "Revisão final" },
+  ];
+
+  const currentStepIndex = guidedSteps.findIndex((item) => item.key === currentStep);
+
+  const sourceOptions = [
+    {
+      key: "income",
+      title: "Receita cadastrada",
+      description: "Use salário, freela, venda ou outra entrada do mês.",
+      value: incomeTransactions.length ? `${incomeTransactions.length} receita(s)` : "Sem receitas",
+      icon: <ArrowUpCircle size={20} />,
+    },
+    {
+      key: "balance",
+      title: "Saldo do mês",
+      description: "Usa o saldo positivo disponível no painel.",
+      value: money.format(availableBalance),
+      icon: <Wallet size={20} />,
+    },
+    {
+      key: "manual",
+      title: "Valor manual",
+      description: "Informe um valor livre, sem vincular a uma receita.",
+      value: "Livre",
+      icon: <Edit3 size={20} />,
+    },
+  ];
+
+  const targetOptions = [
+    {
+      key: "transaction",
+      title: "Despesa",
+      description: "Quitar ou abater um lançamento.",
+      value: `${expenseTargets.filter((item) => item.remaining > 0).length} pendente(s)`,
+      icon: <ArrowDownCircle size={20} />,
+    },
+    {
+      key: "card",
+      title: "Cartão",
+      description: "Pagar fatura ou recarregar benefício.",
+      value: `${cardUsage.filter((item) => Number(item.spent || 0) > 0 || item.stored_value_card).length} cartão(ões)`,
+      icon: <CreditCard size={20} />,
+    },
+    {
+      key: "goal",
+      title: "Meta",
+      description: "Adicionar valor a uma meta financeira.",
+      value: `${goals.length} meta(s)`,
+      icon: <Target size={20} />,
+    },
+    {
+      key: "manual",
+      title: "Manual",
+      description: "Registrar um destino que não está cadastrado.",
+      value: "Livre",
+      icon: <FileText size={20} />,
+    },
+  ];
+
+  const filteredExpenseTargets = useMemo(() => {
+    return expenseTargets.filter((item) => {
+      if (targetFilter === "paid") return item.remaining <= 0;
+      if (targetFilter === "partial") return item.paid > 0 && item.remaining > 0;
+      if (targetFilter === "card") return Boolean(item.card_id);
+      if (targetFilter === "no-card") return !item.card_id;
+      if (targetFilter === "pending") return item.remaining > 0;
+      return true;
+    });
+  }, [expenseTargets, targetFilter]);
+
+  function selectSourceType(type) {
+    update("source_type", type);
+    setCurrentStep("source");
+  }
+
+  function selectTargetType(type) {
+    update("target_type", type);
+    setCurrentStep("target");
+  }
+
   function fillSuggestedAmount() {
     const suggested = Math.min(Number(selectedSource.available || 0), Number(selectedTarget.remaining || 0));
     if (suggested > 0) update("amount", String(Number(suggested.toFixed(2))));
+  }
+
+  function clearPaymentForm() {
+    setForm(initialForm);
+    setCurrentStep("source");
+    setShowNotes(false);
+  }
+
+  function goNextStep() {
+    if (currentStep === "source") return setCurrentStep("target");
+    if (currentStep === "target") return setCurrentStep("amount");
+    if (currentStep === "amount") return setCurrentStep("review");
+  }
+
+  function goPreviousStep() {
+    if (currentStep === "review") return setCurrentStep("amount");
+    if (currentStep === "amount") return setCurrentStep("target");
+    if (currentStep === "target") return setCurrentStep("source");
   }
 
   function handleSubmit(event) {
@@ -5310,7 +5656,7 @@ function PaymentsPage({ selectedMonth, summary, transactions, monthTransactions,
       notes: form.notes,
     });
 
-    setForm(initialForm);
+    clearPaymentForm();
   }
 
   function allocationSourceLabel(item) {
@@ -5331,175 +5677,358 @@ function PaymentsPage({ selectedMonth, summary, transactions, monthTransactions,
   const paidTotal = monthAllocations.reduce((total, item) => total + Number(item.amount || 0), 0);
   const partialTargets = expenseTargets.filter((item) => item.paid > 0 && item.remaining > 0).length;
   const paidTargets = expenseTargets.filter((item) => item.paid > 0 && item.remaining <= 0).length;
+  const pendingTotal = expenseTargets.reduce((total, item) => total + Number(item.remaining || 0), 0);
 
   return (
     <main className="grid gap-6">
       <section className="dashboard-metrics-grid grid gap-4 md:grid-cols-4">
         <MetricCard title="Pagamentos no mês" value={money.format(paidTotal)} icon={<CheckCircle2 />} tone="emerald" />
         <MetricCard title="Saldo disponível" value={money.format(availableBalance)} icon={<Wallet />} tone="blue" />
+        <MetricCard title="Pendências" value={money.format(pendingTotal)} icon={<ArrowDownCircle />} tone="rose" />
         <MetricCard title="Pagos por completo" value={String(paidTargets)} icon={<CheckCircle2 />} tone="emerald" />
-        <MetricCard title="Parciais" value={String(partialTargets)} icon={<PiggyBank />} tone="amber" />
       </section>
 
-      <section className="grid gap-6 xl:grid-cols-[420px_1fr]">
+      <section className="surface-card rounded-[2rem] p-5 shadow-sm">
+        <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <div className="mb-2 inline-flex items-center gap-2 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-black text-emerald-300">
+              <CheckCircle2 size={15} /> Pagamento guiado
+            </div>
+            <h2 className="text-2xl font-black">Registrar pagamento</h2>
+            <p className="muted-text mt-1 max-w-2xl text-sm leading-6">
+              Siga as etapas para escolher a origem do dinheiro, o destino e o valor. O sistema mostra quanto fica pendente antes de confirmar.
+            </p>
+          </div>
+          <button type="button" onClick={clearPaymentForm} className="ghost-button rounded-2xl px-4 py-2 text-sm font-black">
+            Limpar
+          </button>
+        </div>
+
+        <div className="mb-5 grid gap-3 md:grid-cols-4">
+          {guidedSteps.map((step, index) => {
+            const isActive = step.key === currentStep;
+            const isDone = index < currentStepIndex;
+            return (
+              <button
+                key={step.key}
+                type="button"
+                onClick={() => setCurrentStep(step.key)}
+                className={classNames(
+                  "transaction-row interactive-row rounded-2xl p-4 text-left transition",
+                  isActive && "border-emerald-500/60 bg-emerald-500/10",
+                  isDone && "border-emerald-500/30"
+                )}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className={classNames("flex h-8 w-8 items-center justify-center rounded-xl text-xs font-black", isActive || isDone ? "bg-emerald-500 text-white" : "bg-slate-500/10 muted-text")}>
+                    {isDone ? <CheckCircle2 size={16} /> : index + 1}
+                  </span>
+                  {isActive && <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] font-black uppercase text-emerald-300">Atual</span>}
+                </div>
+                <strong className="mt-3 block text-sm font-black">{step.title}</strong>
+                <p className="muted-text mt-1 text-xs leading-5">{step.description}</p>
+              </button>
+            );
+          })}
+        </div>
+
+        <form onSubmit={handleSubmit} className="grid gap-5 lg:grid-cols-[1fr_360px]">
+          <section className="rounded-[1.75rem] border border-white/10 bg-slate-950/20 p-4">
+            {currentStep === "source" && (
+              <div className="space-y-5">
+                <div>
+                  <h3 className="text-xl font-black">1. Escolha a origem</h3>
+                  <p className="muted-text mt-1 text-sm">Informe de onde vem o dinheiro usado no pagamento.</p>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-3">
+                  {sourceOptions.map((option) => (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => selectSourceType(option.key)}
+                      className={classNames("transaction-row interactive-row rounded-2xl p-4 text-left", form.source_type === option.key && "border-emerald-500/70 bg-emerald-500/10")}
+                    >
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <span className="rounded-2xl bg-emerald-500/10 p-2 text-emerald-400">{option.icon}</span>
+                        <span className="rounded-full bg-slate-500/10 px-2 py-1 text-[10px] font-black uppercase muted-text">{option.value}</span>
+                      </div>
+                      <h4 className="font-black">{option.title}</h4>
+                      <p className="muted-text mt-1 text-xs leading-5">{option.description}</p>
+                    </button>
+                  ))}
+                </div>
+
+                {form.source_type === "income" && (
+                  <Field label="Receita cadastrada">
+                    <select value={form.source_transaction_id} onChange={(event) => update("source_transaction_id", event.target.value)} className="input">
+                      <option value="">Selecione uma receita</option>
+                      {incomeTransactions.map((item) => {
+                        const available = Math.max(0, Number(item.amount || 0) - sourceUsedByIncome(item.id));
+                        return <option key={item.id} value={item.id}>{item.description} — disponível {money.format(available)}</option>;
+                      })}
+                    </select>
+                  </Field>
+                )}
+
+                {form.source_type === "manual" && (
+                  <Field label="Valor disponível manual">
+                    <input type="number" min="0" step="0.01" value={form.manual_source_amount} onChange={(event) => update("manual_source_amount", event.target.value)} className="input" placeholder="0,00" />
+                  </Field>
+                )}
+              </div>
+            )}
+
+            {currentStep === "target" && (
+              <div className="space-y-5">
+                <div>
+                  <h3 className="text-xl font-black">2. Escolha o destino</h3>
+                  <p className="muted-text mt-1 text-sm">Selecione o que será quitado, abatido ou reforçado.</p>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-4">
+                  {targetOptions.map((option) => (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => selectTargetType(option.key)}
+                      className={classNames("transaction-row interactive-row rounded-2xl p-4 text-left", form.target_type === option.key && "border-emerald-500/70 bg-emerald-500/10")}
+                    >
+                      <span className="mb-3 inline-flex rounded-2xl bg-emerald-500/10 p-2 text-emerald-400">{option.icon}</span>
+                      <h4 className="font-black">{option.title}</h4>
+                      <p className="muted-text mt-1 text-xs leading-5">{option.description}</p>
+                      <span className="mt-3 inline-flex rounded-full bg-slate-500/10 px-2 py-1 text-[10px] font-black uppercase muted-text">{option.value}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {form.target_type === "transaction" && (
+                  <div className="space-y-3">
+                    <div className="flex flex-wrap gap-2">
+                      {[
+                        ["pending", "Pendentes"],
+                        ["partial", "Parciais"],
+                        ["card", "Com cartão"],
+                        ["no-card", "Sem cartão"],
+                        ["all", "Todas"],
+                      ].map(([key, label]) => (
+                        <button key={key} type="button" onClick={() => setTargetFilter(key)} className={classNames("rounded-xl px-3 py-2 text-xs font-black", targetFilter === key ? "bg-emerald-600 text-white" : "ghost-button")}>
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <Field label="Despesa / lançamento">
+                      <select value={form.target_transaction_id} onChange={(event) => update("target_transaction_id", event.target.value)} className="input">
+                        <option value="">Selecione uma despesa</option>
+                        {filteredExpenseTargets.map((item) => <option key={item.id} value={item.id}>{item.description} — falta {money.format(item.remaining)}</option>)}
+                      </select>
+                    </Field>
+                  </div>
+                )}
+
+                {form.target_type === "card" && (
+                  <Field label="Cartão">
+                    <select value={form.target_card_id} onChange={(event) => update("target_card_id", event.target.value)} className="input">
+                      <option value="">Selecione um cartão</option>
+                      {cardUsage.map((card) => <option key={card.id} value={card.id}>{card.name} — {card.stored_value_card ? `disponível ${money.format(card.available)}` : `em aberto ${money.format(card.spent)}`}</option>)}
+                    </select>
+                  </Field>
+                )}
+
+                {form.target_type === "goal" && (
+                  <Field label="Meta">
+                    <select value={form.target_goal_id} onChange={(event) => update("target_goal_id", event.target.value)} className="input">
+                      <option value="">Selecione uma meta</option>
+                      {goals.map((goal) => <option key={goal.id} value={goal.id}>{goal.title} — falta {money.format(Math.max(0, Number(goal.target_amount || 0) - Number(goal.current_amount || 0)))}</option>)}
+                    </select>
+                  </Field>
+                )}
+
+                {form.target_type === "manual" && (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <Field label="Nome do destino"><input value={form.manual_target_label} onChange={(event) => update("manual_target_label", event.target.value)} className="input" placeholder="Ex.: Conta pessoal" /></Field>
+                    <Field label="Valor do destino"><input type="number" min="0" step="0.01" value={form.manual_target_amount} onChange={(event) => update("manual_target_amount", event.target.value)} className="input" placeholder="0,00" /></Field>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {currentStep === "amount" && (
+              <div className="space-y-5">
+                <div>
+                  <h3 className="text-xl font-black">3. Informe o valor</h3>
+                  <p className="muted-text mt-1 text-sm">Você pode pagar tudo, usar o valor disponível ou registrar um pagamento parcial.</p>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+                  <Field label="Valor a usar"><input type="number" min="0" step="0.01" value={form.amount} onChange={(event) => update("amount", event.target.value)} className="input" placeholder="0,00" /></Field>
+                  <button type="button" onClick={fillSuggestedAmount} className="outline-button self-end rounded-2xl px-4 py-3 text-sm font-black">Usar necessário</button>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="Data do pagamento"><DateInput value={form.payment_date} onChange={(value) => update("payment_date", value)} /></Field>
+                  <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4">
+                    <p className="text-xs font-black uppercase text-emerald-300">Resultado</p>
+                    <p className="mt-2 text-sm font-bold">{canPayAll ? "Você consegue quitar esse destino." : resultLabel}</p>
+                  </div>
+                </div>
+
+                <button type="button" onClick={() => setShowNotes((value) => !value)} className="ghost-button inline-flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-black">
+                  <Edit3 size={16} /> {showNotes ? "Ocultar observação" : "Adicionar observação"}
+                </button>
+
+                {showNotes && (
+                  <Field label="Observação">
+                    <textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} className="input min-h-20" placeholder="Opcional" />
+                  </Field>
+                )}
+              </div>
+            )}
+
+            {currentStep === "review" && (
+              <div className="space-y-5">
+                <div>
+                  <h3 className="text-xl font-black">4. Confirmar pagamento</h3>
+                  <p className="muted-text mt-1 text-sm">Confira os dados antes de registrar.</p>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <ReviewBox title="Origem" value={selectedSource.label} helper={`${selectedSource.helper} · disponível ${money.format(selectedSource.available || 0)}`} />
+                  <ReviewBox title="Destino" value={selectedTarget.label} helper={`${selectedTarget.helper} · falta ${money.format(selectedTarget.remaining || 0)}`} />
+                  <ReviewBox title="Valor" value={money.format(amount || 0)} helper={`Após pagamento: ${money.format(targetAfter)}`} />
+                  <ReviewBox title="Data" value={formatDateBR(form.payment_date)} helper={form.notes ? `Obs.: ${form.notes}` : "Sem observação"} />
+                </div>
+
+                {!canSubmit && (
+                  <div className="rounded-2xl border border-rose-500/20 bg-rose-500/10 p-4 text-sm font-bold text-rose-300">
+                    Revise origem, destino e valor antes de confirmar. O valor não pode ser maior que o disponível nem maior que o faltante.
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+
+          <aside className="space-y-4">
+            <section className="rounded-[1.75rem] border border-emerald-500/20 bg-emerald-500/10 p-4">
+              <h3 className="font-black">Simulação</h3>
+              <div className="mt-4 grid gap-3">
+                <SummaryLine label="Origem" value={selectedSource.label} />
+                <SummaryLine label="Disponível" value={money.format(selectedSource.available || 0)} />
+                <SummaryLine label="Destino" value={selectedTarget.label} />
+                <SummaryLine label="Falta pagar" value={money.format(selectedTarget.remaining || 0)} />
+                <SummaryLine label="Após pagamento" value={money.format(targetAfter)} strong />
+              </div>
+            </section>
+
+            <section className="transaction-row rounded-[1.75rem] p-4">
+              <h3 className="font-black">Dica</h3>
+              <p className="muted-text mt-2 text-sm leading-6">
+                Use “Usar necessário” para preencher automaticamente o menor valor entre o disponível na origem e o que falta no destino.
+              </p>
+            </section>
+
+            <div className="flex flex-col gap-2">
+              {currentStep !== "source" && (
+                <button type="button" onClick={goPreviousStep} className="outline-button rounded-2xl px-4 py-3 text-sm font-black">
+                  Voltar
+                </button>
+              )}
+              {currentStep !== "review" ? (
+                <button
+                  type="button"
+                  onClick={goNextStep}
+                  disabled={(currentStep === "source" && !sourceReady) || (currentStep === "target" && !targetReady) || (currentStep === "amount" && !amountReady)}
+                  className="rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-black text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Continuar
+                </button>
+              ) : (
+                <button disabled={!canSubmit} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-3 text-sm font-black text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">
+                  <Plus size={18} /> Registrar pagamento
+                </button>
+              )}
+            </div>
+          </aside>
+        </form>
+      </section>
+
+      <section className="grid gap-6 xl:grid-cols-[1fr_0.95fr]">
         <section className="surface-card rounded-[2rem] p-5 shadow-sm">
-          <div className="mb-5">
-            <h2 className="text-2xl font-black">Novo pagamento</h2>
-            <p className="muted-text mt-1 text-sm">Use uma receita, saldo ou valor manual para quitar despesas, cartões ou metas.</p>
+          <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-xl font-black">Despesas e destinos pendentes</h2>
+              <p className="muted-text text-sm">Acompanhe o que já foi pago, parcial ou ainda pendente.</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={() => onOpenTransactions({ types: ["expense"] })} className="ghost-button rounded-xl px-3 py-2 text-sm font-bold">Ver lançamentos</button>
+              <button onClick={onOpenCards} className="ghost-button rounded-xl px-3 py-2 text-sm font-bold">Ver cartões</button>
+              <button onClick={onOpenGoals} className="ghost-button rounded-xl px-3 py-2 text-sm font-bold">Ver metas</button>
+            </div>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <Field label="De onde vem o valor">
-              <select value={form.source_type} onChange={(event) => update("source_type", event.target.value)} className="input">
-                <option value="income">Receita cadastrada</option>
-                <option value="balance">Saldo disponível do mês</option>
-                <option value="manual">Valor manual</option>
-              </select>
-            </Field>
-
-            {form.source_type === "income" && (
-              <Field label="Receita">
-                <select value={form.source_transaction_id} onChange={(event) => update("source_transaction_id", event.target.value)} className="input">
-                  <option value="">Selecione uma receita</option>
-                  {incomeTransactions.map((item) => {
-                    const available = Math.max(0, Number(item.amount || 0) - sourceUsedByIncome(item.id));
-                    return <option key={item.id} value={item.id}>{item.description} — disponível {money.format(available)}</option>;
-                  })}
-                </select>
-              </Field>
-            )}
-
-            {form.source_type === "manual" && (
-              <Field label="Valor disponível manual">
-                <input type="number" min="0" step="0.01" value={form.manual_source_amount} onChange={(event) => update("manual_source_amount", event.target.value)} className="input" placeholder="0,00" />
-              </Field>
-            )}
-
-            <Field label="Para onde vai">
-              <select value={form.target_type} onChange={(event) => update("target_type", event.target.value)} className="input">
-                <option value="transaction">Despesa / lançamento</option>
-                <option value="card">Cartão</option>
-                <option value="goal">Meta</option>
-                <option value="manual">Destino manual</option>
-              </select>
-            </Field>
-
-            {form.target_type === "transaction" && (
-              <Field label="Despesa">
-                <select value={form.target_transaction_id} onChange={(event) => update("target_transaction_id", event.target.value)} className="input">
-                  <option value="">Selecione uma despesa</option>
-                  {expenseTargets.map((item) => <option key={item.id} value={item.id}>{item.description} — falta {money.format(item.remaining)}</option>)}
-                </select>
-              </Field>
-            )}
-
-            {form.target_type === "card" && (
-              <Field label="Cartão">
-                <select value={form.target_card_id} onChange={(event) => update("target_card_id", event.target.value)} className="input">
-                  <option value="">Selecione um cartão</option>
-                  {cardUsage.map((card) => <option key={card.id} value={card.id}>{card.name} — em aberto {money.format(card.spent)}</option>)}
-                </select>
-              </Field>
-            )}
-
-            {form.target_type === "goal" && (
-              <Field label="Meta">
-                <select value={form.target_goal_id} onChange={(event) => update("target_goal_id", event.target.value)} className="input">
-                  <option value="">Selecione uma meta</option>
-                  {goals.map((goal) => <option key={goal.id} value={goal.id}>{goal.title} — falta {money.format(Math.max(0, Number(goal.target_amount || 0) - Number(goal.current_amount || 0)))}</option>)}
-                </select>
-              </Field>
-            )}
-
-            {form.target_type === "manual" && (
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="Nome do destino"><input value={form.manual_target_label} onChange={(event) => update("manual_target_label", event.target.value)} className="input" placeholder="Ex.: Conta pessoal" /></Field>
-                <Field label="Valor do destino"><input type="number" min="0" step="0.01" value={form.manual_target_amount} onChange={(event) => update("manual_target_amount", event.target.value)} className="input" placeholder="0,00" /></Field>
-              </div>
-            )}
-
-            <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
-              <Field label="Valor a usar"><input type="number" min="0" step="0.01" value={form.amount} onChange={(event) => update("amount", event.target.value)} className="input" placeholder="0,00" /></Field>
-              <button type="button" onClick={fillSuggestedAmount} className="outline-button self-end rounded-2xl px-4 py-3 text-sm font-black">Usar necessário</button>
-            </div>
-
-            <Field label="Data do pagamento"><DateInput value={form.payment_date} onChange={(value) => update("payment_date", value)} /></Field>
-            <Field label="Observação"><textarea value={form.notes} onChange={(event) => update("notes", event.target.value)} className="input min-h-20" placeholder="Opcional" /></Field>
-
-            <div className="rounded-[1.5rem] border border-emerald-500/20 bg-emerald-500/10 p-4">
-              <div className="grid gap-3 sm:grid-cols-3">
-                <div><p className="muted-text text-xs font-black">Disponível</p><strong>{money.format(selectedSource.available || 0)}</strong></div>
-                <div><p className="muted-text text-xs font-black">Falta pagar</p><strong>{money.format(selectedTarget.remaining || 0)}</strong></div>
-                <div><p className="muted-text text-xs font-black">Após pagamento</p><strong>{money.format(targetAfter)}</strong></div>
-              </div>
-              <p className="mt-3 text-sm font-bold text-emerald-400">{canPayAll ? "Você consegue quitar esse destino." : resultLabel}</p>
-            </div>
-
-            <button disabled={!amount || amount <= 0 || amount > selectedSource.available || amount > selectedTarget.remaining} className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-3 font-black text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">
-              <Plus size={18} /> Registrar pagamento
-            </button>
-          </form>
+          <div className="max-h-[520px] space-y-3 overflow-y-auto pr-2">
+            {expenseTargets.length ? expenseTargets.map((item) => {
+              const percent = item.amount > 0 ? Math.min(100, Math.round((item.paid / item.amount) * 100)) : 0;
+              return (
+                <article key={item.id} className="transaction-row rounded-2xl p-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h3 className="font-black">{item.description}</h3>
+                      <p className="muted-text text-sm">{item.category} · {formatDateBR(item.date)}{item.cardName ? ` · ${item.cardName}` : ""}</p>
+                    </div>
+                    <div className="text-right">
+                      <strong className={item.remaining <= 0 ? "text-emerald-400" : item.paid > 0 ? "text-amber-400" : "text-rose-400"}>{item.remaining <= 0 ? "Pago" : item.paid > 0 ? "Parcial" : "Pendente"}</strong>
+                      <p className="muted-text text-sm">Falta {money.format(item.remaining)}</p>
+                    </div>
+                  </div>
+                  <ProgressBar value={item.paid} max={item.amount || 1} danger={false} />
+                  <p className="muted-text mt-2 text-xs font-bold">{percent}% pago · {money.format(item.paid)} de {money.format(item.amount)}</p>
+                </article>
+              );
+            }) : <EmptyState text="Nenhuma despesa encontrada neste mês." />}
+          </div>
         </section>
 
-        <section className="grid gap-6">
-          <section className="surface-card rounded-[2rem] p-5 shadow-sm">
-            <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div>
-                <h2 className="text-xl font-black">Despesas e destinos pendentes</h2>
-                <p className="muted-text text-sm">Acompanhe o que já foi pago, parcial ou ainda pendente.</p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button onClick={() => onOpenTransactions({ types: ["expense"] })} className="ghost-button rounded-xl px-3 py-2 text-sm font-bold">Ver lançamentos</button>
-                <button onClick={onOpenCards} className="ghost-button rounded-xl px-3 py-2 text-sm font-bold">Ver cartões</button>
-                <button onClick={onOpenGoals} className="ghost-button rounded-xl px-3 py-2 text-sm font-bold">Ver metas</button>
-              </div>
-            </div>
-
-            <div className="max-h-[520px] space-y-3 overflow-y-auto pr-2">
-              {expenseTargets.length ? expenseTargets.map((item) => {
-                const percent = item.amount > 0 ? Math.min(100, Math.round((item.paid / item.amount) * 100)) : 0;
-                return (
-                  <article key={item.id} className="transaction-row rounded-2xl p-4">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div>
-                        <h3 className="font-black">{item.description}</h3>
-                        <p className="muted-text text-sm">{item.category} · {formatDateBR(item.date)}{item.cardName ? ` · ${item.cardName}` : ""}</p>
-                      </div>
-                      <div className="text-right">
-                        <strong className={item.remaining <= 0 ? "text-emerald-400" : item.paid > 0 ? "text-amber-400" : "text-rose-400"}>{item.remaining <= 0 ? "Pago" : item.paid > 0 ? "Parcial" : "Pendente"}</strong>
-                        <p className="muted-text text-sm">Falta {money.format(item.remaining)}</p>
-                      </div>
-                    </div>
-                    <ProgressBar value={item.paid} max={item.amount || 1} danger={false} />
-                    <p className="muted-text mt-2 text-xs font-bold">{percent}% pago · {money.format(item.paid)} de {money.format(item.amount)}</p>
-                  </article>
-                );
-              }) : <EmptyState text="Nenhuma despesa encontrada neste mês." />}
-            </div>
-          </section>
-
-          <section className="surface-card rounded-[2rem] p-5 shadow-sm">
-            <h2 className="text-xl font-black">Histórico de pagamentos</h2>
-            <p className="muted-text mb-4 text-sm">Registros feitos em {monthLabel(selectedMonth)}.</p>
-            <div className="max-h-[420px] space-y-3 overflow-y-auto pr-2">
-              {monthAllocations.length ? monthAllocations.map((item) => (
-                <article key={item.id} className="transaction-row flex flex-col gap-3 rounded-2xl p-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <h3 className="font-black">{allocationTargetLabel(item)}</h3>
-                    <p className="muted-text text-sm">Origem: {allocationSourceLabel(item)} · {formatDateBR(item.payment_date)}</p>
-                    {item.notes && <p className="muted-text mt-1 text-xs">{item.notes}</p>}
-                  </div>
-                  <div className="flex items-center justify-between gap-3 sm:justify-end">
-                    <strong className="text-emerald-400">{money.format(item.amount)}</strong>
-                    <button onClick={() => onDelete(item.id)} className="icon-button rounded-xl p-2 hover:text-rose-500" title="Excluir pagamento"><Trash2 size={17} /></button>
-                  </div>
-                </article>
-              )) : <EmptyState text="Nenhum pagamento registrado neste mês." />}
-            </div>
-          </section>
+        <section className="surface-card rounded-[2rem] p-5 shadow-sm">
+          <h2 className="text-xl font-black">Histórico de pagamentos</h2>
+          <p className="muted-text mb-4 text-sm">Registros feitos em {safeMonthLabel(selectedMonth)}.</p>
+          <div className="max-h-[520px] space-y-3 overflow-y-auto pr-2">
+            {monthAllocations.length ? monthAllocations.map((item) => (
+              <article key={item.id} className="transaction-row flex flex-col gap-3 rounded-2xl p-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="font-black">{allocationTargetLabel(item)}</h3>
+                  <p className="muted-text text-sm">Origem: {allocationSourceLabel(item)} · {formatDateBR(item.payment_date)}</p>
+                  {item.notes && <p className="muted-text mt-1 text-xs">{item.notes}</p>}
+                </div>
+                <div className="flex items-center justify-between gap-3 sm:justify-end">
+                  <strong className="text-emerald-400">{money.format(item.amount)}</strong>
+                  <button onClick={() => onDelete(item.id)} className="icon-button rounded-xl p-2 hover:text-rose-500" title="Excluir pagamento"><Trash2 size={17} /></button>
+                </div>
+              </article>
+            )) : <EmptyState text="Nenhum pagamento registrado neste mês." />}
+          </div>
         </section>
       </section>
     </main>
+  );
+}
+
+function ReviewBox({ title, value, helper }) {
+  return (
+    <div className="transaction-row rounded-2xl p-4">
+      <p className="muted-text text-xs font-black uppercase">{title}</p>
+      <strong className="mt-2 block text-base">{value}</strong>
+      <p className="muted-text mt-1 text-xs leading-5">{helper}</p>
+    </div>
+  );
+}
+
+function SummaryLine({ label, value, strong = false }) {
+  return (
+    <div className="flex items-center justify-between gap-3 text-sm">
+      <span className="muted-text font-bold">{label}</span>
+      <strong className={classNames("text-right", strong && "text-emerald-300")}>{value}</strong>
+    </div>
   );
 }
 
@@ -5625,7 +6154,7 @@ function MobileBottomNav({ tabs, page, setPage, moreOpen = false, setMoreOpen = 
 
   function openPage(key) {
     setMoreOpen(false);
-    setPage(key);
+    setPage(normalizeDashboardPage(key));
   }
 
   return (
@@ -5801,8 +6330,9 @@ function DashboardOverview({ summary, expenseByCategory, dailyFlow, monthlyCompa
     ? Math.round(((Number(currentMonthComparison.expense || 0) - Number(previousMonthComparison.expense || 0)) / Number(previousMonthComparison.expense || 1)) * 100)
     : null;
   const daysWithMovement = dailyFlow.filter((item) => Number(item.income || 0) > 0 || Number(item.expense || 0) > 0);
-  const timelineDays = [...daysWithMovement].sort((a, b) => Number(b.day) - Number(a.day)).slice(0, 5).reverse();
+  const timelineDays = [...daysWithMovement].sort((a, b) => Number(b.day) - Number(a.day)).slice(0, 3);
   const [monthlySummaryOpen, setMonthlySummaryOpen] = useState(false);
+  const [showAnalysis, setShowAnalysis] = useState(false);
   const monthlySummaryData = useMemo(
     () =>
       buildMonthlySummaryData({
@@ -5822,53 +6352,20 @@ function DashboardOverview({ summary, expenseByCategory, dailyFlow, monthlyCompa
   }
 
   return (
-    <main className="dashboard-live mobile-dashboard-flow grid gap-6">
-      <DashboardLiveHero
-        summary={summary}
-        selectedMonth={selectedMonth}
-        healthStatus={healthStatus}
-        notifications={notifications}
-        topExpense={topExpense}
-        nextGoal={nextGoal}
-        highlightedCard={highlightedCard}
-        expenseChangePercent={expenseChangePercent}
-        setPage={setPage}
-        onOpenTransactions={onOpenTransactions}
-      />
-
-      <section className="grid gap-4 md:grid-cols-4">
-        <MetricCard
-          title="Receitas"
-          value={money.format(summary.income)}
-          icon={<ArrowUpCircle />}
-          tone="emerald"
-          onClick={() => onOpenTransactions?.({ types: ["income"] })}
-          info="Soma de todas as entradas cadastradas no mês selecionado. Clique para ver apenas receitas nos lançamentos."
-        />
-        <MetricCard
-          title="Despesas"
-          value={money.format(summary.expense)}
-          icon={<ArrowDownCircle />}
-          tone="rose"
-          onClick={() => onOpenTransactions?.({ types: ["expense"] })}
-          info="Soma de todos os gastos cadastrados no mês selecionado. Clique para ver apenas despesas."
-        />
-        <MetricCard
-          title="Saldo do mês"
-          value={money.format(summary.balance)}
-          icon={<Wallet />}
-          tone={summary.balance >= 0 ? "blue" : "rose"}
-          onClick={() => setPage("reports")}
-          info="Diferença entre receitas e despesas do mês. Clique para abrir os relatórios do período."
-        />
-        <MetricCard
-          title="Economia"
-          value={`${summary.savingRate}%`}
-          icon={<PiggyBank />}
-          tone="amber"
-          onClick={() => setPage("reports")}
-          info="Percentual calculado com base no saldo dividido pelas receitas. Ajuda a entender quanto sobrou da renda."
-        />
+    <main className="dashboard-clean mobile-dashboard-flow grid gap-5">
+      <section className="grid gap-3 md:grid-cols-4">
+        <button type="button" onClick={() => onOpenTransactions?.({ types: ["income"] })} className="text-left">
+          <SummaryMiniCard title="Receitas" value={money.format(summary.income)} tone="emerald" helper="entradas do mês" />
+        </button>
+        <button type="button" onClick={() => onOpenTransactions?.({ types: ["expense"] })} className="text-left">
+          <SummaryMiniCard title="Despesas" value={money.format(summary.expense)} tone="rose" helper={topExpense ? `maior: ${topExpense.name}` : "saídas do mês"} />
+        </button>
+        <button type="button" onClick={() => setPage("reports")} className="text-left">
+          <SummaryMiniCard title="Saldo" value={money.format(summary.balance)} tone={summary.balance >= 0 ? "blue" : "rose"} helper="receitas - despesas" />
+        </button>
+        <button type="button" onClick={() => setMonthlySummaryOpen(true)} className="text-left">
+          <SummaryMiniCard title="Economia" value={`${summary.savingRate}%`} tone="amber" helper="ver resumo" />
+        </button>
       </section>
 
       <MonthlySummaryCard
@@ -5877,135 +6374,155 @@ function DashboardOverview({ summary, expenseByCategory, dailyFlow, monthlyCompa
         onOpenTransactions={onOpenTransactions}
       />
 
-      <DashboardFocusGrid
-        topExpense={topExpense}
-        nextGoal={nextGoal}
-        highlightedCard={highlightedCard}
-        notifications={notifications}
-        summary={summary}
-        setPage={setPage}
-        onOpenTransactions={onOpenTransactions}
-      />
+      <DashboardAttentionStrip notifications={notifications} />
 
-      <section className="dashboard-secondary-row grid gap-6 xl:grid-cols-[1fr_0.9fr]">
-        <InsightsCard insights={insights} />
+      <section className="grid gap-5 xl:grid-cols-[1fr_0.85fr]">
+        <InsightsCard insights={insights} setPage={setPage} onOpenTransactions={onOpenTransactions} />
         <DashboardTimeline days={timelineDays} selectedMonth={selectedMonth} onOpenDay={openDay} />
       </section>
 
-      <section className="dashboard-charts-row grid gap-6 xl:grid-cols-2">
-        <ChartCard
-          title="Gastos por categoria"
-          subtitle={topExpense ? `Maior gasto: ${topExpense.name}` : "Sem despesas neste mês"}
-          info="Mostra como suas despesas estão distribuídas por categoria. Clique em uma fatia para abrir os lançamentos daquela categoria."
-        >
-          {expenseByCategory.length ? (
-            <ResponsiveContainer width="100%" height={280}>
-              <PieChart>
-                <Pie
-                  data={expenseByCategory}
-                  innerRadius={70}
-                  outerRadius={105}
-                  paddingAngle={3}
-                  dataKey="value"
-                  nameKey="name"
-                  onClick={(entry) => onOpenTransactions?.({ categories: [entry.name], types: ["expense"] })}
-                >
-                  {expenseByCategory.map((entry, index) => (
-                    <Cell key={entry.name} fill={chartColors[index % chartColors.length]} className="cursor-pointer" />
-                  ))}
-                </Pie>
-                <Tooltip cursor={false} contentStyle={tooltipStyle()} formatter={(value) => money.format(value)} />
-              </PieChart>
-            </ResponsiveContainer>
-          ) : (
-            <EmptyState text="Cadastre uma despesa para o gráfico aparecer." />
-          )}
-        </ChartCard>
-
-        <ChartCard
-          title="Fluxo diário"
-          subtitle={`Receitas e despesas em ${monthLabel(selectedMonth)}`}
-          info="Mostra em quais dias do mês entraram receitas e saíram despesas. Clique em um dia do gráfico para ver os lançamentos daquele dia."
-        >
-          {dailyFlow.length ? (
-            <ResponsiveContainer width="100%" height={280}>
-              <BarChart data={dailyFlow} onClick={(event) => event?.activePayload?.[0]?.payload?.day && openDay(event.activePayload[0].payload.day)}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
-                <XAxis dataKey="day" tick={{ fill: "var(--muted)" }} axisLine={{ stroke: "var(--border)" }} tickLine={{ stroke: "var(--border)" }} />
-                <YAxis tickFormatter={(value) => `R$${value}`} tick={{ fill: "var(--muted)" }} axisLine={{ stroke: "var(--border)" }} tickLine={{ stroke: "var(--border)" }} />
-                <Tooltip cursor={false} contentStyle={tooltipStyle()} formatter={(value) => money.format(value)} />
-                <Bar dataKey="income" name="Receita" fill="#059669" radius={[8, 8, 0, 0]} className="cursor-pointer" />
-                <Bar dataKey="expense" name="Despesa" fill="#e11d48" radius={[8, 8, 0, 0]} className="cursor-pointer" />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <EmptyState text="Sem lançamentos para este mês." />
-          )}
-        </ChartCard>
-      </section>
-
-      <section className="dashboard-comparison-row grid gap-6 xl:grid-cols-[1.3fr_0.7fr]">
-        <ChartCard
-          title="Comparação mensal"
-          subtitle="Últimos meses com movimentação"
-          info="Compara receitas e despesas dos últimos meses. Clique em uma barra/mês para abrir o painel daquele mês."
-        >
-          {monthlyComparison.length ? (
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={monthlyComparison} onClick={(event) => event?.activePayload?.[0]?.payload?.month && onSelectMonth?.(event.activePayload[0].payload.month)}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
-                <XAxis dataKey="month" tick={{ fill: "var(--muted)" }} />
-                <YAxis tickFormatter={(value) => `R$${value}`} tick={{ fill: "var(--muted)" }} />
-                <Tooltip cursor={false} contentStyle={tooltipStyle()} formatter={(value) => money.format(value)} />
-                <Bar dataKey="income" name="Receita" fill="#059669" radius={[8, 8, 0, 0]} className="cursor-pointer" />
-                <Bar dataKey="expense" name="Despesa" fill="#e11d48" radius={[8, 8, 0, 0]} className="cursor-pointer" />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <EmptyState text="Sem dados suficientes para comparar meses." />
-          )}
-        </ChartCard>
-
-        <section className="surface-card rounded-[2rem] p-5 shadow-sm">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-xl font-black">Top 5 gastos</h2>
-                <InfoPopover title="Top 5 gastos" text="Lista os maiores gastos do mês selecionado. Clique em um item para filtrar lançamentos semelhantes." />
-              </div>
-              <p className="muted-text text-sm">Maiores despesas do mês</p>
+      <section className="surface-card rounded-[2rem] p-5 shadow-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-xl font-black">Análises e gráficos</h2>
+              <InfoPopover title="Análises e gráficos" text="Mantivemos os gráficos recolhidos para o painel ficar mais leve. Abra quando quiser analisar categorias, fluxo diário e comparação mensal." />
             </div>
-            <button onClick={() => onOpenTransactions?.({ types: ["expense"], sort: "highest" })} className="ghost-button rounded-xl px-3 py-2 text-sm font-bold">Ver todos</button>
+            <p className="muted-text mt-1 text-sm font-semibold">
+              Gráficos completos ficam aqui de forma opcional, sem ocupar o início do painel.
+            </p>
           </div>
-          <div className="space-y-3">
-            {topExpenses.length ? (
-              topExpenses.map((item, index) => (
-                <button key={item.id} type="button" onClick={() => onOpenTransactions?.({ categories: [item.category], types: ["expense"], search: item.description })} className="transaction-row interactive-row flex w-full items-center justify-between rounded-2xl p-3 text-left">
+          <button type="button" onClick={() => setShowAnalysis((value) => !value)} className="outline-button rounded-2xl px-4 py-2 text-sm font-black">
+            {showAnalysis ? "Ocultar gráficos" : "Ver gráficos"}
+          </button>
+        </div>
+
+        {!showAnalysis && (
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            <SummaryMiniCard title="Categoria foco" value={topExpense?.name || "Sem dados"} tone="blue" helper={topExpense ? money.format(topExpense.value) : "cadastre despesas"} />
+            <SummaryMiniCard
+              title="Tendência"
+              value={expenseChangePercent === null ? "Em análise" : `${expenseChangePercent > 0 ? "+" : ""}${expenseChangePercent}%`}
+              tone={expenseChangePercent !== null && expenseChangePercent > 0 ? "amber" : "emerald"}
+              helper="vs. mês anterior"
+            />
+            <SummaryMiniCard title="Cartão foco" value={highlightedCard?.name || "Sem cartão"} tone={highlightedCard?.percent >= 80 ? "rose" : "blue"} helper={highlightedCard ? `${highlightedCard.percent}% do limite` : "cadastre um cartão"} />
+          </div>
+        )}
+
+        {showAnalysis && (
+          <div className="mt-5 grid gap-6">
+            <section className="dashboard-charts-row grid gap-6 xl:grid-cols-2">
+              <ChartCard
+                title="Gastos por categoria"
+                subtitle={topExpense ? `Maior gasto: ${topExpense.name}` : "Sem despesas neste mês"}
+                info="Mostra como suas despesas estão distribuídas por categoria. Clique em uma fatia para abrir os lançamentos daquela categoria."
+              >
+                {expenseByCategory.length ? (
+                  <ResponsiveContainer width="100%" height={260}>
+                    <PieChart>
+                      <Pie
+                        data={expenseByCategory}
+                        innerRadius={65}
+                        outerRadius={100}
+                        paddingAngle={3}
+                        dataKey="value"
+                        nameKey="name"
+                        onClick={(entry) => onOpenTransactions?.({ categories: [entry.name], types: ["expense"] })}
+                      >
+                        {expenseByCategory.map((entry, index) => (
+                          <Cell key={entry.name} fill={chartColors[index % chartColors.length]} className="cursor-pointer" />
+                        ))}
+                      </Pie>
+                      <Tooltip cursor={false} contentStyle={tooltipStyle()} formatter={(value) => money.format(value)} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <EmptyState text="Cadastre uma despesa para o gráfico aparecer." />
+                )}
+              </ChartCard>
+
+              <ChartCard
+                title="Fluxo diário"
+                subtitle={`Receitas e despesas em ${safeMonthLabel(selectedMonth)}`}
+                info="Mostra em quais dias do mês entraram receitas e saíram despesas. Clique em um dia do gráfico para ver os lançamentos daquele dia."
+              >
+                {dailyFlow.length ? (
+                  <ResponsiveContainer width="100%" height={260}>
+                    <BarChart data={dailyFlow} onClick={(event) => event?.activePayload?.[0]?.payload?.day && openDay(event.activePayload[0].payload.day)}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
+                      <XAxis dataKey="day" tick={{ fill: "var(--muted)" }} axisLine={{ stroke: "var(--border)" }} tickLine={{ stroke: "var(--border)" }} />
+                      <YAxis tickFormatter={(value) => `R$${value}`} tick={{ fill: "var(--muted)" }} axisLine={{ stroke: "var(--border)" }} tickLine={{ stroke: "var(--border)" }} />
+                      <Tooltip cursor={false} contentStyle={tooltipStyle()} formatter={(value) => money.format(value)} />
+                      <Bar dataKey="income" name="Receita" fill="#059669" radius={[8, 8, 0, 0]} className="cursor-pointer" />
+                      <Bar dataKey="expense" name="Despesa" fill="#e11d48" radius={[8, 8, 0, 0]} className="cursor-pointer" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <EmptyState text="Sem lançamentos para este mês." />
+                )}
+              </ChartCard>
+            </section>
+
+            <section className="dashboard-comparison-row grid gap-6 xl:grid-cols-[1.3fr_0.7fr]">
+              <ChartCard
+                title="Comparação mensal"
+                subtitle="Últimos meses com movimentação"
+                info="Compara receitas e despesas dos últimos meses. Clique em uma barra/mês para abrir o painel daquele mês."
+              >
+                {monthlyComparison.length ? (
+                  <ResponsiveContainer width="100%" height={280}>
+                    <BarChart data={monthlyComparison} onClick={(event) => event?.activePayload?.[0]?.payload?.month && onSelectMonth?.(event.activePayload[0].payload.month)}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
+                      <XAxis dataKey="month" tick={{ fill: "var(--muted)" }} />
+                      <YAxis tickFormatter={(value) => `R$${value}`} tick={{ fill: "var(--muted)" }} />
+                      <Tooltip cursor={false} contentStyle={tooltipStyle()} formatter={(value) => money.format(value)} />
+                      <Bar dataKey="income" name="Receita" fill="#059669" radius={[8, 8, 0, 0]} className="cursor-pointer" />
+                      <Bar dataKey="expense" name="Despesa" fill="#e11d48" radius={[8, 8, 0, 0]} className="cursor-pointer" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <EmptyState text="Sem dados suficientes para comparar meses." />
+                )}
+              </ChartCard>
+
+              <section className="field-shell rounded-[1.5rem] p-4">
+                <div className="mb-3 flex items-center justify-between gap-3">
                   <div>
-                    <strong>{index + 1}. {item.description}</strong>
-                    <p className="muted-text text-sm">{item.category}</p>
+                    <h3 className="font-black">Maiores gastos</h3>
+                    <p className="muted-text text-xs font-semibold">Top despesas do mês.</p>
                   </div>
-                  <strong className="text-rose-500">{money.format(item.amount)}</strong>
-                </button>
-              ))
-            ) : (
-              <EmptyState text="Nenhuma despesa cadastrada neste mês." />
-            )}
+                  <button onClick={() => onOpenTransactions?.({ types: ["expense"], sort: "highest" })} className="ghost-button rounded-xl px-3 py-2 text-xs font-black">Ver todos</button>
+                </div>
+                <div className="space-y-2">
+                  {topExpenses.length ? (
+                    topExpenses.slice(0, 5).map((item, index) => (
+                      <button key={item.id} type="button" onClick={() => onOpenTransactions?.({ categories: [item.category], types: ["expense"], search: item.description })} className="transaction-row interactive-row flex w-full items-center justify-between rounded-2xl p-3 text-left">
+                        <div>
+                          <strong className="text-sm">{index + 1}. {item.description}</strong>
+                          <p className="muted-text text-xs">{item.category}</p>
+                        </div>
+                        <strong className="text-sm text-rose-500">{money.format(item.amount)}</strong>
+                      </button>
+                    ))
+                  ) : (
+                    <EmptyState text="Nenhuma despesa cadastrada neste mês." />
+                  )}
+                </div>
+              </section>
+            </section>
           </div>
-        </section>
+        )}
       </section>
 
       {nextGoal && (
-        <section className="surface-card interactive-card rounded-[2rem] p-5 shadow-sm" role="button" tabIndex={0} onClick={() => setPage("goals")} onKeyDown={(event) => (event.key === "Enter" || event.key === " ") && setPage("goals")}>
-          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <section className="surface-card interactive-card rounded-[2rem] p-4 shadow-sm" role="button" tabIndex={0} onClick={() => setPage("goals")} onKeyDown={(event) => (event.key === "Enter" || event.key === " ") && setPage("goals")}>
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-xl font-black">Meta em destaque: {nextGoal.title}</h2>
-                <InfoPopover title="Meta em destaque" text="Mostra a primeira meta cadastrada e o progresso atual. Clique para abrir a área de metas." />
-              </div>
+              <h2 className="text-lg font-black">Meta em destaque: {nextGoal.title}</h2>
               <p className="muted-text text-sm">{money.format(nextGoal.current_amount)} de {money.format(nextGoal.target_amount)}</p>
             </div>
-            <button type="button" onClick={(event) => { event.stopPropagation(); setPage("goals"); }} className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-black text-white">Acompanhar metas</button>
+            <button type="button" onClick={(event) => { event.stopPropagation(); setPage("goals"); }} className="outline-button rounded-2xl px-4 py-2 text-sm font-black">Acompanhar</button>
           </div>
           <ProgressBar value={nextGoal.current_amount} max={nextGoal.target_amount} />
         </section>
@@ -6020,6 +6537,467 @@ function DashboardOverview({ summary, expenseByCategory, dailyFlow, monthlyCompa
       />
     </main>
   );
+}
+
+function DashboardAttentionStrip({ notifications = [] }) {
+  const [selectedNotification, setSelectedNotification] = useState(null);
+  const safeNotifications = Array.isArray(notifications) ? notifications : [];
+  const criticalCount = safeNotifications.filter((item) => item.tone === "rose" || Number(item.priority || 99) <= 1).length;
+  const firstItems = safeNotifications.slice(0, 2);
+
+  function toneClass(tone) {
+    if (tone === "rose") return "alert-compact-rose";
+    if (tone === "amber") return "alert-compact-amber";
+    if (tone === "emerald") return "alert-compact-emerald";
+    return "alert-compact-blue";
+  }
+
+  if (!safeNotifications.length) {
+    return (
+      <section className="surface-card rounded-[2rem] p-4 shadow-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3">
+            <div className="rounded-2xl bg-emerald-500/10 p-2.5 text-emerald-400"><Bell size={18} /></div>
+            <div>
+              <h2 className="text-lg font-black">Pontos de atenção</h2>
+              <p className="muted-text text-sm font-semibold">Nenhum alerta importante no momento.</p>
+            </div>
+          </div>
+          <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-black text-emerald-400">Tudo certo</span>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="surface-card rounded-[2rem] p-4 shadow-sm">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex items-start gap-3">
+          <div className="rounded-2xl bg-amber-500/10 p-2.5 text-amber-400"><Bell size={18} /></div>
+          <div>
+            <h2 className="text-lg font-black">Pontos de atenção</h2>
+            <p className="muted-text mt-1 text-sm font-semibold">
+              {safeNotifications.length} ponto(s) ativo(s){criticalCount ? `, ${criticalCount} crítico(s)` : ""}. Veja só quando precisar.
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {firstItems.map((item) => (
+            <button key={`${item.title}-${item.text}`} type="button" onClick={() => setSelectedNotification(item)} className={classNames("alert-compact-button inline-flex max-w-[260px] items-center gap-2 rounded-2xl px-3 py-2 text-left text-xs font-black transition", toneClass(item.tone))}>
+              <span className="alert-dot" />
+              <span className="truncate">{item.title}</span>
+            </button>
+          ))}
+          <button type="button" onClick={() => setSelectedNotification(safeNotifications[0])} className="outline-button rounded-2xl px-4 py-2 text-xs font-black">
+            Ver alertas
+          </button>
+        </div>
+      </div>
+
+      {selectedNotification && (
+        <div className="alert-detail-backdrop fixed inset-0 z-[90] flex items-start justify-center px-4 py-6 sm:py-10" onClick={() => setSelectedNotification(null)}>
+          <div className="alert-detail-modal surface-card w-full max-w-2xl rounded-[2rem] p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <span className={classNames("alert-detail-chip", toneClass(selectedNotification.tone))}>{selectedNotification.badge || "Alerta"}</span>
+                <h3 className="mt-3 text-2xl font-black leading-tight">{selectedNotification.title}</h3>
+                <p className="muted-text mt-2 text-sm font-semibold leading-6">{selectedNotification.text}</p>
+              </div>
+              <button type="button" onClick={() => setSelectedNotification(null)} className="icon-button rounded-2xl p-2" aria-label="Fechar detalhes do alerta" title="Fechar">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4">
+              <strong className="block text-sm font-black text-emerald-400">Dica prática</strong>
+              <p className="mt-2 text-sm font-semibold leading-6 text-emerald-300">
+                {selectedNotification.action || "Revise os lançamentos relacionados e acompanhe novamente no fechamento do mês."}
+              </p>
+            </div>
+            <div className="mt-5 flex justify-end">
+              <button type="button" onClick={() => setSelectedNotification(null)} className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-black text-white transition hover:bg-emerald-700">Entendi</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function buildMonthlyInsights({
+  summary,
+  previousSummary,
+  expenseByCategory = [],
+  topExpenses = [],
+  categoryUsage = [],
+  goals = [],
+  preferences,
+  cardUsage = [],
+  recurringItems = [],
+  paymentAllocations = [],
+  monthTransactions = [],
+  selectedMonth,
+}) {
+  const insights = [];
+  const income = Number(summary?.income || 0);
+  const expense = Number(summary?.expense || 0);
+  const balance = Number(summary?.balance || 0);
+  const savingRate = Number(summary?.savingRate || 0);
+  const incomeBase = Number(income || preferences?.monthly_income || 0);
+  const hasData = income > 0 || expense > 0;
+  const previousExpense = Number(previousSummary?.expense || 0);
+  const previousIncome = Number(previousSummary?.income || 0);
+  const topCategory = expenseByCategory[0];
+  const topExpense = topExpenses[0];
+  const activeRecurringCount = recurringItems.filter((item) => item.is_active).length;
+  const monthPayments = paymentAllocations.filter((item) => item.payment_date?.slice(0, 7) === selectedMonth);
+  const recurringMonthCount = recurringItems.reduce((total, item) => total + getRecurringOccurrenceDates(item, selectedMonth).length, 0);
+
+  function addInsight(item) {
+    if (!item?.title) return;
+    if (insights.some((current) => current.id === item.id || current.title === item.title)) return;
+    insights.push({
+      tone: "blue",
+      badge: "Insight",
+      metric: "",
+      actionLabel: "Ver detalhes",
+      text: "",
+      tip: "Mantenha seus lançamentos atualizados para o sistema gerar leituras melhores.",
+      ...item,
+    });
+  }
+
+  if (!hasData) {
+    addInsight({
+      id: "start-month",
+      tone: "blue",
+      badge: "Começo",
+      title: "Comece pelo básico",
+      text: "Ainda não há dados suficientes neste mês para gerar uma leitura financeira completa.",
+      metric: "0 lançamentos",
+      tip: "Cadastre sua renda principal e pelo menos os gastos fixos. Depois disso, os insights ficam muito mais úteis.",
+      actionLabel: "Criar lançamento",
+      page: "transactions",
+    });
+
+    if (!preferences?.monthly_income) {
+      addInsight({
+        id: "set-income",
+        tone: "amber",
+        badge: "Configuração",
+        title: "Cadastre sua renda base",
+        text: "A renda mensal ajuda o sistema a calcular economia, orçamento usado e saúde financeira mesmo antes de todos os lançamentos.",
+        metric: "Renda vazia",
+        tip: "Abra Conta e informe uma renda base aproximada. Você pode alterar depois quando quiser.",
+        actionLabel: "Abrir Conta",
+        page: "account",
+      });
+    }
+
+    return insights.slice(0, 4);
+  }
+
+  if (balance < 0) {
+    addInsight({
+      id: "negative-balance",
+      tone: "rose",
+      badge: "Crítico",
+      title: "Saldo negativo no mês",
+      text: `As despesas passaram das receitas em ${money.format(Math.abs(balance))}.`,
+      metric: money.format(balance),
+      tip: topCategory
+        ? `Comece revisando ${topCategory.name}, que soma ${money.format(topCategory.value)} no mês.`
+        : "Revise os maiores gastos e evite novas despesas até o saldo voltar ao positivo.",
+      actionLabel: "Ver despesas",
+      transactionFilter: { types: ["expense"] },
+    });
+  } else if (savingRate >= 25) {
+    addInsight({
+      id: "healthy-saving",
+      tone: "emerald",
+      badge: "Positivo",
+      title: "Boa sobra no mês",
+      text: `Você economizou ${savingRate}% das receitas do mês.`,
+      metric: money.format(balance),
+      tip: "Considere direcionar parte dessa sobra para uma meta, reserva ou pagamento antecipado de alguma obrigação.",
+      actionLabel: "Ver metas",
+      page: "goals",
+    });
+  } else if (balance > 0) {
+    addInsight({
+      id: "positive-balance",
+      tone: savingRate >= 10 ? "blue" : "amber",
+      badge: savingRate >= 10 ? "Controle" : "Atenção",
+      title: savingRate >= 10 ? "Mês positivo" : "Sobra baixa",
+      text: `Seu saldo está positivo em ${money.format(balance)}.` ,
+      metric: `${savingRate}% economia`,
+      tip: savingRate >= 10
+        ? "Mantenha os gastos variáveis controlados até o fechamento do mês."
+        : "A sobra está pequena. Revise compras pequenas e recorrentes antes de assumir novos gastos.",
+      actionLabel: "Ver resumo",
+      page: "reports",
+    });
+  }
+
+  if (previousExpense > 0) {
+    const diff = expense - previousExpense;
+    const percent = Math.round((diff / previousExpense) * 100);
+
+    if (diff > 0) {
+      addInsight({
+        id: "expense-up",
+        tone: percent >= 20 ? "rose" : "amber",
+        badge: "Tendência",
+        title: "Despesas subiram",
+        text: `Você gastou ${money.format(diff)} a mais que no mês anterior.`,
+        metric: `+${percent}%`,
+        tip: "Compare as maiores categorias do mês atual com o mês anterior para entender onde aconteceu o aumento.",
+        actionLabel: "Ver relatórios",
+        page: "reports",
+      });
+    } else if (diff < 0) {
+      addInsight({
+        id: "expense-down",
+        tone: "emerald",
+        badge: "Economia",
+        title: "Despesas diminuíram",
+        text: `Você gastou ${money.format(Math.abs(diff))} a menos que no mês anterior.`,
+        metric: `${percent}%`,
+        tip: "Boa evolução. Veja quais categorias caíram e tente manter esse padrão nos próximos meses.",
+        actionLabel: "Ver relatórios",
+        page: "reports",
+      });
+    }
+  }
+
+  if (previousIncome > 0 && income > 0) {
+    const diff = income - previousIncome;
+    if (Math.abs(diff) >= Math.max(100, previousIncome * 0.1)) {
+      addInsight({
+        id: "income-change",
+        tone: diff >= 0 ? "emerald" : "amber",
+        badge: "Receitas",
+        title: diff >= 0 ? "Receita aumentou" : "Receita caiu",
+        text: diff >= 0 ? `Entrou ${money.format(diff)} a mais que no mês anterior.` : `Entrou ${money.format(Math.abs(diff))} a menos que no mês anterior.`,
+        metric: `${diff >= 0 ? "+" : "-"}${money.format(Math.abs(diff))}`,
+        tip: diff >= 0 ? "Aproveite a renda extra para reforçar metas ou quitar pendências." : "Com a receita menor, vale reduzir gastos variáveis e priorizar compromissos fixos.",
+        actionLabel: "Ver receitas",
+        transactionFilter: { types: ["income"] },
+      });
+    }
+  }
+
+  if (topCategory && expense > 0) {
+    const categoryShare = Math.round((Number(topCategory.value || 0) / expense) * 100);
+    addInsight({
+      id: "top-category",
+      tone: categoryShare >= 45 ? "amber" : "blue",
+      badge: "Categoria",
+      title: `${topCategory.name} lidera os gastos`,
+      text: `${topCategory.name} representa ${categoryShare}% das despesas do mês.`,
+      metric: money.format(topCategory.value),
+      tip: categoryShare >= 45
+        ? "Essa categoria está concentrando muitos gastos. Vale abrir os lançamentos e identificar compras que podem ser reduzidas."
+        : "Acompanhe essa categoria para evitar que ela cresça demais até o fechamento do mês.",
+      actionLabel: "Ver categoria",
+      transactionFilter: { categories: [topCategory.name], types: ["expense"] },
+    });
+  }
+
+  if (topExpense && incomeBase > 0) {
+    const topExpenseShare = Math.round((Number(topExpense.amount || 0) / incomeBase) * 100);
+    if (topExpenseShare >= 15) {
+      addInsight({
+        id: "top-expense",
+        tone: topExpenseShare >= 25 ? "rose" : "amber",
+        badge: "Maior gasto",
+        title: "Um gasto pesou no mês",
+        text: `${topExpense.description} representa ${topExpenseShare}% da sua renda/base mensal.`,
+        metric: money.format(topExpense.amount),
+        tip: "Quando um lançamento pesa muito na renda, vale avaliar se ele é pontual ou se precisa entrar no planejamento fixo.",
+        actionLabel: "Ver lançamento",
+        transactionFilter: { search: topExpense.description, categories: [topExpense.category], types: ["expense"] },
+      });
+    }
+  }
+
+  const exceededLimits = categoryUsage.filter((item) => item.exceeded);
+  const nearLimits = categoryUsage.filter((item) => !item.exceeded && Number(item.percent || 0) >= 80);
+  if (exceededLimits.length) {
+    const item = [...exceededLimits].sort((a, b) => Number(b.percent || 0) - Number(a.percent || 0))[0];
+    addInsight({
+      id: "limit-exceeded",
+      tone: "rose",
+      badge: "Limite",
+      title: `Limite estourado em ${item.category}`,
+      text: `Você já passou ${money.format(Number(item.spent || 0) - Number(item.monthly_limit || 0))} do limite cadastrado.`,
+      metric: `${item.percent}%`,
+      tip: "Abra a categoria e veja quais lançamentos fizeram o limite passar. Ajuste o limite só se ele estiver irrealista.",
+      actionLabel: "Ver categoria",
+      transactionFilter: { categories: [item.category], types: ["expense"] },
+    });
+  } else if (nearLimits.length) {
+    const item = [...nearLimits].sort((a, b) => Number(b.percent || 0) - Number(a.percent || 0))[0];
+    addInsight({
+      id: "limit-near",
+      tone: "amber",
+      badge: "Limite",
+      title: `${item.category} perto do limite`,
+      text: `Você já usou ${item.percent}% do limite mensal dessa categoria.`,
+      metric: `${item.percent}%`,
+      tip: "Evite novas compras nessa categoria até virar o mês ou revise se o limite cadastrado faz sentido.",
+      actionLabel: "Ver limites",
+      page: "limits",
+    });
+  }
+
+  const highlightedCard = [...cardUsage].sort((a, b) => Number(b.percent || 0) - Number(a.percent || 0))[0];
+  if (highlightedCard && Number(highlightedCard.percent || 0) >= 70) {
+    addInsight({
+      id: "card-usage",
+      tone: Number(highlightedCard.percent || 0) >= 90 ? "rose" : "amber",
+      badge: "Cartão",
+      title: `${highlightedCard.name} exige atenção`,
+      text: `O cartão está com ${highlightedCard.percent}% do limite/base em uso.`,
+      metric: money.format(highlightedCard.spent || 0),
+      tip: "Confira parcelamentos e fatura antes de novas compras. Se for cartão benefício, acompanhe o saldo disponível.",
+      actionLabel: "Abrir cartões",
+      page: "cards",
+    });
+  }
+
+  const closeGoal = goals.find((goal) => goal.target_amount > 0 && goal.current_amount / goal.target_amount >= 0.8 && goal.current_amount < goal.target_amount);
+  if (closeGoal) {
+    const remaining = Number(closeGoal.target_amount || 0) - Number(closeGoal.current_amount || 0);
+    addInsight({
+      id: "goal-close",
+      tone: "emerald",
+      badge: "Meta",
+      title: `Meta quase concluída`,
+      text: `Faltam ${money.format(remaining)} para concluir "${closeGoal.title}".`,
+      metric: `${Math.round((closeGoal.current_amount / closeGoal.target_amount) * 100)}%`,
+      tip: "Se o saldo do mês permitir, faça um pequeno aporte para acelerar a conclusão dessa meta.",
+      actionLabel: "Ver metas",
+      page: "goals",
+    });
+  }
+
+  if (activeRecurringCount > 0) {
+    addInsight({
+      id: "recurring-control",
+      tone: "blue",
+      badge: "Fixos",
+      title: "Fixos ajudam a prever o mês",
+      text: recurringMonthCount > 0 ? `${recurringMonthCount} ocorrência(s) fixa(s) previstas neste mês.` : `${activeRecurringCount} fixo(s) ativo(s) cadastrado(s).`,
+      metric: `${activeRecurringCount} ativo(s)`,
+      tip: "Mantenha os fixos atualizados para o painel prever melhor suas despesas e receitas recorrentes.",
+      actionLabel: "Ver fixos",
+      page: "recurring",
+    });
+  }
+
+  if (monthPayments.length > 0) {
+    const paidAmount = monthPayments.reduce((total, item) => total + Number(item.amount || 0), 0);
+    addInsight({
+      id: "payments-done",
+      tone: "emerald",
+      badge: "Pagamentos",
+      title: "Pagamentos registrados",
+      text: `Você registrou ${monthPayments.length} pagamento(s) neste mês.`,
+      metric: money.format(paidAmount),
+      tip: "Continue usando a aba Pagamentos para saber o que já foi quitado e o que ainda está em aberto.",
+      actionLabel: "Ver pagamentos",
+      page: "payments",
+    });
+  }
+
+  if (monthTransactions.length >= 10) {
+    addInsight({
+      id: "good-tracking",
+      tone: "emerald",
+      badge: "Organização",
+      title: "Boa consistência nos registros",
+      text: `Você já tem ${monthTransactions.length} lançamento(s) neste mês.`,
+      metric: `${monthTransactions.length} itens`,
+      tip: "Quanto mais consistente for o registro, melhores ficam os relatórios, limites e alertas do mês.",
+      actionLabel: "Ver lançamentos",
+      transactionFilter: {},
+    });
+  }
+
+  if (!insights.length) {
+    addInsight({
+      id: "keep-tracking",
+      tone: "blue",
+      badge: "Rotina",
+      title: "Mês em acompanhamento",
+      text: "Continue registrando entradas e saídas para receber análises mais específicas.",
+      metric: `${monthTransactions.length} lançamentos`,
+      tip: "Use os lançamentos rápidos e os fixos para manter o controle sem gastar muito tempo.",
+      actionLabel: "Novo lançamento",
+      page: "transactions",
+    });
+  }
+
+  const priority = { rose: 1, amber: 2, blue: 3, emerald: 4 };
+  return insights
+    .sort((a, b) => (priority[a.tone] || 5) - (priority[b.tone] || 5))
+    .slice(0, 6);
+}
+
+function getInsightToneClasses(tone) {
+  const tones = {
+    emerald: {
+      icon: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+      badge: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+      accent: "text-emerald-400",
+      button: "bg-emerald-600 hover:bg-emerald-700 text-white",
+    },
+    blue: {
+      icon: "bg-blue-500/10 text-blue-400 border-blue-500/20",
+      badge: "bg-blue-500/10 text-blue-400 border-blue-500/20",
+      accent: "text-blue-400",
+      button: "bg-blue-600 hover:bg-blue-700 text-white",
+    },
+    amber: {
+      icon: "bg-amber-500/10 text-amber-400 border-amber-500/20",
+      badge: "bg-amber-500/10 text-amber-400 border-amber-500/20",
+      accent: "text-amber-400",
+      button: "bg-amber-500 hover:bg-amber-600 text-slate-950",
+    },
+    rose: {
+      icon: "bg-rose-500/10 text-rose-400 border-rose-500/20",
+      badge: "bg-rose-500/10 text-rose-400 border-rose-500/20",
+      accent: "text-rose-400",
+      button: "bg-rose-600 hover:bg-rose-700 text-white",
+    },
+  };
+
+  return tones[tone] || tones.blue;
+}
+
+function getInsightDotClass(tone) {
+  const dots = {
+    emerald: "bg-emerald-400",
+    blue: "bg-blue-400",
+    amber: "bg-amber-400",
+    rose: "bg-rose-400",
+  };
+
+  return dots[tone] || dots.blue;
+}
+
+function getInsightIcon(insight) {
+  const badge = String(insight?.badge || "").toLowerCase();
+  const title = String(insight?.title || "").toLowerCase();
+
+  if (badge.includes("cart") || title.includes("cart")) return <CreditCard size={20} />;
+  if (badge.includes("meta") || title.includes("meta")) return <Target size={20} />;
+  if (badge.includes("fix") || title.includes("fix")) return <Repeat size={20} />;
+  if (badge.includes("pag")) return <CheckCircle2 size={20} />;
+  if (badge.includes("limite") || title.includes("limite")) return <PiggyBank size={20} />;
+  if (badge.includes("tend") || title.includes("subiram") || title.includes("diminu")) return <TrendingUp size={20} />;
+  if (insight?.tone === "rose" || insight?.tone === "amber") return <Bell size={20} />;
+  return <Eye size={20} />;
 }
 
 function getMonthlySummaryTone(data) {
@@ -6084,7 +7062,7 @@ function buildMonthlySummaryData({ summary, selectedMonth, expenseByCategory = [
 
   return {
     selectedMonth,
-    monthName: monthLabel(selectedMonth),
+    monthName: safeMonthLabel(selectedMonth),
     hasData,
     income,
     expense,
@@ -6374,7 +7352,7 @@ function DashboardLiveHero({ summary, selectedMonth, healthStatus, notifications
                 Painel vivo
               </span>
               <span className="dashboard-live-pill-soft rounded-full px-3 py-1 text-xs font-black">
-                {monthLabel(selectedMonth)}
+                {safeMonthLabel(selectedMonth)}
               </span>
             </div>
 
@@ -6538,7 +7516,7 @@ function DashboardTimeline({ days, selectedMonth, onOpenDay }) {
             <h2 className="text-xl font-black">Últimos movimentos</h2>
             <InfoPopover title="Últimos movimentos" text="Mostra os dias mais recentes com receitas ou despesas. Clique em um dia para abrir os lançamentos daquele período." />
           </div>
-          <p className="muted-text text-sm">Movimentação recente em {monthLabel(selectedMonth)}</p>
+          <p className="muted-text text-sm">Movimentação recente em {safeMonthLabel(selectedMonth)}</p>
         </div>
         <CalendarDays className="muted-icon" size={22} />
       </div>
@@ -6734,20 +7712,127 @@ function MultiFilterSelect({ label, values, onChange, options, allValue, allLabe
   );
 }
 
+function isAllFilterSelected(values, allValue) {
+  return !Array.isArray(values) || !values.length || values.includes(allValue);
+}
+
+function getTransactionDateGroupTitle(dateValue) {
+  if (!dateValue) return "Sem data";
+
+  const today = todayISODate();
+  const yesterdayDate = new Date();
+  yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+  const yesterday = dateToISODate(yesterdayDate);
+
+  if (dateValue === today) return "Hoje";
+  if (dateValue === yesterday) return "Ontem";
+  return formatDateBR(dateValue);
+}
+
+function buildTransactionDateGroups(items = []) {
+  const groups = new Map();
+
+  items.forEach((item) => {
+    const key = item?.date || "sem-data";
+    const current = groups.get(key) || {
+      id: key,
+      date: item?.date || "",
+      title: getTransactionDateGroupTitle(item?.date || ""),
+      items: [],
+    };
+
+    current.items.push(item);
+    groups.set(key, current);
+  });
+
+  return Array.from(groups.values()).sort((a, b) => {
+    if (!a.date && !b.date) return 0;
+    if (!a.date) return 1;
+    if (!b.date) return -1;
+    return String(b.date).localeCompare(String(a.date));
+  });
+}
+
+function TransactionQuickFilter({ active, icon, label, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={classNames(
+        "inline-flex items-center justify-center gap-2 rounded-2xl px-3 py-2 text-xs font-black transition",
+        active ? "bg-emerald-500/15 text-emerald-300" : "ghost-button"
+      )}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
+function TransactionDateGroup({ group, onEdit, onDelete, onDuplicate, onView, creditCards, selectedTransactionIds, onToggleSelect }) {
+  const totals = calculateTransactionTotals(group.items);
+
+  return (
+    <section className="transaction-date-group rounded-[1.75rem] border border-slate-500/10 bg-slate-500/5 p-3">
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h3 className="text-sm font-black uppercase tracking-[0.12em]">{group.title}</h3>
+          <p className="muted-text text-xs font-semibold">
+            {group.items.length} lançamento(s) · saldo do dia {money.format(totals.balance)}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs font-black">
+          {totals.income > 0 && <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-emerald-400">+ {money.format(totals.income)}</span>}
+          {totals.expense > 0 && <span className="rounded-full bg-rose-500/10 px-3 py-1 text-rose-400">- {money.format(totals.expense)}</span>}
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {group.items.map((item) => (
+          <TransactionRow
+            key={item.id}
+            item={item}
+            onEdit={onEdit}
+            onDelete={onDelete}
+            onDuplicate={onDuplicate}
+            onView={onView}
+            creditCards={creditCards}
+            selectable
+            selected={selectedTransactionIds.includes(item.id)}
+            onToggleSelect={onToggleSelect}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function TransactionsPage({ form, setForm, resetForm, onRepeatPreviousExpense, onSubmit, visibleTransactions, separatedCardTransactions = [], onOpenCards, allCategories, query, setQuery, dateFilter, setDateFilter, categoryFilter, setCategoryFilter, typeFilter, setTypeFilter, cardFilter, setCardFilter, sortBy, setSortBy, onEdit, onDelete, onDuplicate, onView, exportCSV, exportExcel, creditCards }) {
   const [showAutomaticTransactions, setShowAutomaticTransactions] = useState(false);
   const [selectedTransactionIds, setSelectedTransactionIds] = useState([]);
   const manualTransactions = visibleTransactions.filter((item) => !item.recurring_item_id && !item.recurrence_month);
   const automaticTransactions = visibleTransactions.filter((item) => item.recurring_item_id || item.recurrence_month);
+  const manualGroups = useMemo(() => buildTransactionDateGroups(manualTransactions), [manualTransactions]);
+  const automaticGroups = useMemo(() => buildTransactionDateGroups(automaticTransactions), [automaticTransactions]);
   const selectedTransactions = visibleTransactions.filter((item) => selectedTransactionIds.includes(item.id));
   const filteredTotals = calculateTransactionTotals(visibleTransactions);
   const selectedTotals = calculateTransactionTotals(selectedTransactions);
   const visibleIds = visibleTransactions.map((item) => item.id);
+  const visibleIdsKey = visibleIds.join("|");
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedTransactionIds.includes(id));
+  const activeFiltersCount = [
+    query?.trim(),
+    dateFilter,
+    !isAllFilterSelected(categoryFilter, "Todas"),
+    !isAllFilterSelected(typeFilter, "all"),
+    !isAllFilterSelected(cardFilter, "all"),
+    sortBy !== "recent",
+  ].filter(Boolean).length;
+  const hasFilters = activeFiltersCount > 0;
 
   useEffect(() => {
     setSelectedTransactionIds((current) => current.filter((id) => visibleIds.includes(id)));
-  }, [visibleTransactions]);
+  }, [visibleIdsKey]);
 
   function toggleTransactionSelection(id) {
     setSelectedTransactionIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
@@ -6757,21 +7842,58 @@ function TransactionsPage({ form, setForm, resetForm, onRepeatPreviousExpense, o
     setSelectedTransactionIds(allVisibleSelected ? [] : visibleIds);
   }
 
+  function clearTransactionFilters() {
+    setQuery("");
+    setDateFilter("");
+    setCategoryFilter(["Todas"]);
+    setTypeFilter(["all"]);
+    setCardFilter(["all"]);
+    setSortBy("recent");
+  }
+
+  function selectTransactionType(nextType) {
+    setForm((current) => {
+      const categories = defaultCategories[nextType];
+      const next = {
+        ...current,
+        type: nextType,
+        category: categories.includes(current.category) ? current.category : categories[0],
+      };
+
+      if (nextType === "income") {
+        next.card_id = "";
+        next.is_installment = false;
+        next.installments = "1";
+        if (isCardBasedPaymentMethod(next.method)) next.method = "Pix";
+      }
+
+      return next;
+    });
+  }
+
+  const activeTypeLabel = isAllFilterSelected(typeFilter, "all")
+    ? "todos os tipos"
+    : typeFilter.includes("income") && typeFilter.includes("expense")
+      ? "receitas e despesas"
+      : typeFilter.includes("income")
+        ? "receitas"
+        : "despesas";
+
   return (
-    <main className="grid gap-6 lg:grid-cols-[380px_1fr]">
+    <main className="grid gap-6 lg:grid-cols-[360px_1fr]">
       <section id="new-transaction-form-card" className="surface-card compact-entry-card rounded-[2rem] p-5 shadow-sm">
         <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h2 className="text-xl font-black">Novo lançamento</h2>
-            <p className="muted-text text-sm">Registre receita ou despesa.</p>
+            <h2 className="text-xl font-black">Lançamento rápido</h2>
+            <p className="muted-text text-sm">Cadastre entradas e saídas com menos etapas.</p>
           </div>
-          <div className="flex flex-wrap gap-2 sm:justify-end">
-            <button type="button" onClick={onRepeatPreviousExpense} className="outline-button rounded-xl px-3 py-2 text-xs font-black">
-              Lançar igual ao anterior
-            </button>
-            <button type="button" onClick={resetForm} className="ghost-button rounded-xl px-3 py-2 text-xs font-bold">Limpar</button>
-          </div>
+          <button type="button" onClick={resetForm} className="ghost-button w-fit rounded-xl px-3 py-2 text-xs font-bold">Limpar</button>
         </div>
+
+
+        <button type="button" onClick={onRepeatPreviousExpense} className="outline-button mb-4 inline-flex w-full items-center justify-center gap-2 rounded-2xl px-3 py-3 text-sm font-black">
+          <Repeat size={17} /> Lançar igual ao anterior
+        </button>
 
         <TransactionForm form={form} setForm={setForm} onSubmit={onSubmit} editingId={null} creditCards={creditCards} />
       </section>
@@ -6779,12 +7901,19 @@ function TransactionsPage({ form, setForm, resetForm, onRepeatPreviousExpense, o
       <section className="surface-card rounded-[2rem] p-5 shadow-sm">
         <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
-            <h2 className="text-xl font-black">Lançamentos avulsos</h2>
-            <p className="muted-text text-sm">Movimentações sem cartão vinculado. Gastos de cartão ficam separados na aba Cartões.</p>
+            <h2 className="text-xl font-black">Histórico de lançamentos</h2>
+            <p className="muted-text text-sm">
+              {visibleTransactions.length} registro(s) encontrados em {activeTypeLabel}. Gastos de cartão continuam separados na aba Cartões.
+            </p>
           </div>
           <div className="flex flex-wrap gap-2">
+            {hasFilters && (
+              <button type="button" onClick={clearTransactionFilters} className="ghost-button inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-2 text-sm font-black transition">
+                <X size={16} /> Limpar filtros
+              </button>
+            )}
             <button onClick={exportExcel} className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-black text-white transition hover:bg-emerald-700">
-              <Download size={17} /> Exportar Excel
+              <Download size={17} /> Excel
             </button>
             <button onClick={exportCSV} className="outline-button inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-2 text-sm font-black transition">
               CSV
@@ -6792,49 +7921,59 @@ function TransactionsPage({ form, setForm, resetForm, onRepeatPreviousExpense, o
           </div>
         </div>
 
-        <div className="mb-4 grid gap-3 lg:grid-cols-[1fr_160px_160px_170px_170px]">
-          <label className="field-shell flex items-center gap-2 rounded-2xl px-3 py-2">
-            <Search size={17} className="muted-icon" />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por descrição, categoria..." className="w-full bg-transparent text-sm outline-none" />
-          </label>
-          <MultiFilterSelect
-            label="Categoria"
-            values={categoryFilter}
-            onChange={setCategoryFilter}
-            allValue="Todas"
-            allLabel="Todas"
-            options={allCategories.map((category) => ({ value: category, label: category }))}
-          />
-          <MultiFilterSelect
-            label="Tipo"
-            values={typeFilter}
-            onChange={setTypeFilter}
-            allValue="all"
-            allLabel="Todos"
-            options={[
-              { value: "all", label: "Todos" },
-              { value: "income", label: "Receitas" },
-              { value: "expense", label: "Despesas" },
-            ]}
-          />
-          <MultiFilterSelect
-            label="Cartões"
-            values={cardFilter}
-            onChange={setCardFilter}
-            allValue="all"
-            allLabel="Todos os cartões"
-            options={[
-              { value: "all", label: "Todos os cartões" },
-              { value: "none", label: "Sem cartão" },
-              ...creditCards.map((card) => ({ value: card.id, label: card.name })),
-            ]}
-          />
-          <select value={sortBy} onChange={(event) => setSortBy(event.target.value)} className="input">
-            <option value="recent">Mais recente</option>
-            <option value="oldest">Mais antigo</option>
-            <option value="highest">Maior valor</option>
-            <option value="lowest">Menor valor</option>
-          </select>
+        <div className="mb-4 rounded-[1.75rem] border border-slate-500/10 bg-slate-500/5 p-3">
+          <div className="grid gap-3 lg:grid-cols-[1fr_160px_160px_170px_170px]">
+            <label className="field-shell flex items-center gap-2 rounded-2xl px-3 py-2">
+              <Search size={17} className="muted-icon" />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por descrição, categoria, forma..." className="w-full bg-transparent text-sm outline-none" />
+            </label>
+            <MultiFilterSelect
+              label="Categoria"
+              values={categoryFilter}
+              onChange={setCategoryFilter}
+              allValue="Todas"
+              allLabel="Todas"
+              options={allCategories.map((category) => ({ value: category, label: category }))}
+            />
+            <MultiFilterSelect
+              label="Tipo"
+              values={typeFilter}
+              onChange={setTypeFilter}
+              allValue="all"
+              allLabel="Todos"
+              options={[
+                { value: "all", label: "Todos" },
+                { value: "income", label: "Receitas" },
+                { value: "expense", label: "Despesas" },
+              ]}
+            />
+            <MultiFilterSelect
+              label="Cartões"
+              values={cardFilter}
+              onChange={setCardFilter}
+              allValue="all"
+              allLabel="Todos os cartões"
+              options={[
+                { value: "all", label: "Todos os cartões" },
+                { value: "none", label: "Sem cartão" },
+                ...creditCards.map((card) => ({ value: card.id, label: card.name })),
+              ]}
+            />
+            <select value={sortBy} onChange={(event) => setSortBy(event.target.value)} className="input">
+              <option value="recent">Mais recente</option>
+              <option value="oldest">Mais antigo</option>
+              <option value="highest">Maior valor</option>
+              <option value="lowest">Menor valor</option>
+            </select>
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-2">
+            <TransactionQuickFilter active={dateFilter === todayISODate()} icon={<CalendarDays size={15} />} label="Hoje" onClick={() => setDateFilter(dateFilter === todayISODate() ? "" : todayISODate())} />
+            <TransactionQuickFilter active={typeFilter.includes("expense") && !typeFilter.includes("all")} icon={<ArrowDownCircle size={15} />} label="Despesas" onClick={() => setTypeFilter(typeFilter.includes("expense") && !typeFilter.includes("all") ? ["all"] : ["expense"])} />
+            <TransactionQuickFilter active={typeFilter.includes("income") && !typeFilter.includes("all")} icon={<ArrowUpCircle size={15} />} label="Receitas" onClick={() => setTypeFilter(typeFilter.includes("income") && !typeFilter.includes("all") ? ["all"] : ["income"])} />
+            <TransactionQuickFilter active={cardFilter.includes("none")} icon={<Wallet size={15} />} label="Sem cartão" onClick={() => setCardFilter(cardFilter.includes("none") ? ["all"] : ["none"])} />
+            <TransactionQuickFilter active={sortBy === "highest"} icon={<TrendingUp size={15} />} label="Maiores valores" onClick={() => setSortBy(sortBy === "highest" ? "recent" : "highest")} />
+          </div>
         </div>
 
         {separatedCardTransactions.length > 0 && (
@@ -6876,12 +8015,12 @@ function TransactionsPage({ form, setForm, resetForm, onRepeatPreviousExpense, o
         />
 
         <div
-  className="space-y-3 overflow-y-auto pr-2"
-  style={{
-    maxHeight: "70vh",
-    scrollbarGutter: "stable",
-  }}
->
+          className="space-y-4 overflow-y-auto pr-2"
+          style={{
+            maxHeight: "70vh",
+            scrollbarGutter: "stable",
+          }}
+        >
           {automaticTransactions.length > 0 && (
             <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-3">
               <button
@@ -6897,14 +8036,53 @@ function TransactionsPage({ form, setForm, resetForm, onRepeatPreviousExpense, o
               </p>
 
               {showAutomaticTransactions && (
-                <div className="mt-3 space-y-3">
-                  {automaticTransactions.map((item) => <TransactionRow key={item.id} item={item} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} onView={onView} creditCards={creditCards} selectable selected={selectedTransactionIds.includes(item.id)} onToggleSelect={toggleTransactionSelection} />)}
+                <div className="mt-3 space-y-4">
+                  {automaticGroups.map((group) => (
+                    <TransactionDateGroup
+                      key={group.id}
+                      group={group}
+                      onEdit={onEdit}
+                      onDelete={onDelete}
+                      onDuplicate={onDuplicate}
+                      onView={onView}
+                      creditCards={creditCards}
+                      selectedTransactionIds={selectedTransactionIds}
+                      onToggleSelect={toggleTransactionSelection}
+                    />
+                  ))}
                 </div>
               )}
             </div>
           )}
 
-          {manualTransactions.length ? manualTransactions.map((item) => <TransactionRow key={item.id} item={item} onEdit={onEdit} onDelete={onDelete} onDuplicate={onDuplicate} onView={onView} creditCards={creditCards} selectable selected={selectedTransactionIds.includes(item.id)} onToggleSelect={toggleTransactionSelection} />) : !automaticTransactions.length ? <EmptyState title="Nenhum lançamento avulso encontrado" text={separatedCardTransactions.length ? "Os lançamentos de cartão deste filtro foram separados na aba Cartões." : "Tente limpar filtros ou cadastrar uma nova receita/despesa."} actionLabel={separatedCardTransactions.length ? "Ver em Cartões" : undefined} onAction={separatedCardTransactions.length ? onOpenCards : undefined} /> : null}
+          {manualGroups.length ? (
+            manualGroups.map((group) => (
+              <TransactionDateGroup
+                key={group.id}
+                group={group}
+                onEdit={onEdit}
+                onDelete={onDelete}
+                onDuplicate={onDuplicate}
+                onView={onView}
+                creditCards={creditCards}
+                selectedTransactionIds={selectedTransactionIds}
+                onToggleSelect={toggleTransactionSelection}
+              />
+            ))
+          ) : !automaticTransactions.length ? (
+            <EmptyState
+              title={hasFilters ? "Nenhum lançamento encontrado" : "Nenhum lançamento avulso encontrado"}
+              text={
+                separatedCardTransactions.length
+                  ? "Os lançamentos de cartão deste filtro foram separados na aba Cartões."
+                  : hasFilters
+                    ? "Tente limpar os filtros ou cadastrar um novo lançamento."
+                    : "Cadastre uma receita ou despesa para começar a acompanhar seu mês."
+              }
+              actionLabel={separatedCardTransactions.length ? "Ver em Cartões" : hasFilters ? "Limpar filtros" : undefined}
+              onAction={separatedCardTransactions.length ? onOpenCards : hasFilters ? clearTransactionFilters : undefined}
+            />
+          ) : null}
         </div>
       </section>
     </main>
@@ -7718,7 +8896,7 @@ function RecurringPage({ recurringForm, setRecurringForm, recurringItems, onSubm
         <div className="surface-card rounded-[2rem] p-5 shadow-sm">
           <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
-              <h2 className="text-xl font-black">Fixos de {monthLabel(selectedMonth)}</h2>
+              <h2 className="text-xl font-black">Fixos de {safeMonthLabel(selectedMonth)}</h2>
               <p className="muted-text text-sm">Agora os fixos podem repetir por semana, quinzena, ano ou intervalo personalizado.</p>
             </div>
             <button onClick={onGenerate} className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-black text-white">Sincronizar fixos</button>
@@ -7767,7 +8945,7 @@ function RecurringRow({ item, selectedMonth, onToggle, onEdit, onDelete }) {
         </div>
         <p className="muted-text text-sm">{item.category} · {item.method} · {getRecurringScheduleText(item)}</p>
         <p className="muted-text mt-1 text-xs font-semibold">
-          {nextOccurrence ? `${occurrences.length} ocorrência(s) em ${monthLabel(selectedMonth)} · próxima: ${formatDateBR(nextOccurrence)}` : `Sem ocorrência em ${monthLabel(selectedMonth)}`}
+          {nextOccurrence ? `${occurrences.length} ocorrência(s) em ${safeMonthLabel(selectedMonth)} · próxima: ${formatDateBR(nextOccurrence)}` : `Sem ocorrência em ${safeMonthLabel(selectedMonth)}`}
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-3 sm:justify-end">
@@ -7924,33 +9102,228 @@ function EditRecurringModal({ open, form, setForm, onSubmit, onClose }) {
   );
 }
 
-function OnboardingBanner({ preferencesForm, setPreferencesForm, onSubmit }) {
+function OnboardingBanner({ userName, preferencesForm, setPreferencesForm, onSubmit, onSkip, onOpenPage, stats = {} }) {
+  const [step, setStep] = useState(0);
+  const [saving, setSaving] = useState(false);
+
+  const steps = [
+    { title: "Boas-vindas", helper: "Entenda o fluxo" },
+    { title: "Renda e objetivo", helper: "Base dos cálculos" },
+    { title: "Primeiros cadastros", helper: "Organize o app" },
+    { title: "Tudo pronto", helper: "Comece a usar" },
+  ];
+
+  const checklist = [
+    {
+      title: "Renda mensal",
+      text: preferencesForm.monthly_income ? money.format(toNumber(preferencesForm.monthly_income)) : "Ainda não informada",
+      done: Number(toNumber(preferencesForm.monthly_income)) > 0,
+      action: "account",
+    },
+    {
+      title: "Cartão cadastrado",
+      text: stats.cards > 0 ? `${stats.cards} cartão(ões)` : "Cadastre seus cartões para controlar faturas.",
+      done: stats.cards > 0,
+      action: "cards",
+    },
+    {
+      title: "Fixos cadastrados",
+      text: stats.recurring > 0 ? `${stats.recurring} fixo(s)` : "Ex.: salário, Netflix, IPVA e vale refeição.",
+      done: stats.recurring > 0,
+      action: "recurring",
+    },
+    {
+      title: "Meta financeira",
+      text: stats.goals > 0 ? `${stats.goals} meta(s)` : "Crie uma meta para acompanhar seu progresso.",
+      done: stats.goals > 0,
+      action: "goals",
+    },
+  ];
+
+  const progress = Math.round(((step + 1) / steps.length) * 100);
+
   function update(field, value) {
     setPreferencesForm((current) => ({ ...current, [field]: value }));
   }
+
+  async function finish(event) {
+    event?.preventDefault?.();
+    setSaving(true);
+    const ok = await onSubmit?.(event || null, { successMessage: "Configuração inicial concluída. Seu painel está pronto para uso." });
+    setSaving(false);
+    return ok;
+  }
+
+  async function skip() {
+    setSaving(true);
+    await onSkip?.();
+    setSaving(false);
+  }
+
+  async function openArea(targetPage) {
+    setSaving(true);
+    const ok = await onSkip?.();
+    setSaving(false);
+    if (ok !== false) onOpenPage?.(targetPage);
+  }
+
   return (
-    <section className="surface-card rounded-[2rem] p-5 shadow-sm">
-      <div className="grid gap-5 lg:grid-cols-[1fr_1.2fr] lg:items-center">
-        <div>
-          <div className="mb-3 inline-flex rounded-full bg-emerald-500/10 px-3 py-1 text-sm font-black text-emerald-400">
-            Configuração inicial
+    <div className="edit-modal-backdrop fixed inset-0 z-[95] flex items-center justify-center px-4 py-5 sm:py-8" role="dialog" aria-modal="true" aria-label="Configuração inicial">
+      <div className="surface-card relative flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-[2rem] shadow-2xl">
+        <div className="edit-modal-hero relative overflow-hidden p-5 sm:p-7">
+          <div className="edit-modal-glow" />
+          <div className="relative z-10 flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <div className="mb-3 inline-flex w-fit items-center gap-2 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-black uppercase tracking-[0.18em] text-emerald-300">
+                <ShieldCheck size={15} /> Configuração inicial
+              </div>
+              <h2 className="text-2xl font-black tracking-tight sm:text-3xl">
+                {step === 0 ? `Bem-vindo${userName ? `, ${userName}` : ""}` : steps[step].title}
+              </h2>
+              <p className="muted-text mt-2 max-w-2xl text-sm font-semibold leading-7">
+                {step === 0 && "Vamos preparar seu controle financeiro em poucos passos. Você pode pular e ajustar tudo depois em Conta."}
+                {step === 1 && "Essas informações ajudam o painel a calcular saúde financeira, alertas e dicas mais úteis."}
+                {step === 2 && "Depois da configuração, estes são os primeiros cadastros recomendados para deixar o app completo."}
+                {step === 3 && "Seu painel já está pronto. Finalize agora ou abra uma área para continuar configurando."}
+              </p>
+            </div>
+
+            <div className="min-w-[190px] rounded-2xl border border-white/10 bg-slate-950/35 p-4">
+              <div className="flex items-center justify-between text-xs font-black uppercase tracking-[0.16em] text-slate-400">
+                <span>Progresso</span>
+                <span>{progress}%</span>
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-950/80">
+                <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} />
+              </div>
+              <p className="muted-text mt-3 text-xs font-semibold">Passo {step + 1} de {steps.length}</p>
+            </div>
           </div>
-          <h2 className="text-2xl font-black">Bem-vindo ao seu controle financeiro</h2>
-          <p className="muted-text mt-2 text-sm leading-7">
-            Configure algumas informações rápidas para deixar o painel mais personalizado.
-          </p>
         </div>
-        <form onSubmit={onSubmit} className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
-          <Field label="Renda mensal aproximada">
-            <input type="number" min="0" step="0.01" value={preferencesForm.monthly_income} onChange={(event) => update("monthly_income", event.target.value)} className="input" placeholder="0,00" />
-          </Field>
-          <Field label="Principal objetivo">
-            <input value={preferencesForm.main_goal} onChange={(event) => update("main_goal", event.target.value)} className="input" placeholder="Ex.: reserva de emergência" />
-          </Field>
-          <button className="self-end rounded-2xl bg-emerald-600 px-4 py-3 font-black text-white">Salvar</button>
-        </form>
+
+        <div className="flex-1 overflow-y-auto p-5 sm:p-7">
+          <div className="mb-5 grid gap-2 sm:grid-cols-4">
+            {steps.map((item, index) => (
+              <button
+                key={item.title}
+                type="button"
+                onClick={() => setStep(index)}
+                className={classNames(
+                  "rounded-2xl border p-3 text-left transition",
+                  index === step ? "border-emerald-500/60 bg-emerald-500/10 text-emerald-300" : "border-white/10 bg-slate-950/20 hover:border-emerald-500/30"
+                )}
+              >
+                <span className="block text-xs font-black uppercase tracking-[0.14em]">0{index + 1}</span>
+                <strong className="mt-1 block text-sm font-black">{item.title}</strong>
+                <span className="muted-text mt-1 block text-xs font-semibold">{item.helper}</span>
+              </button>
+            ))}
+          </div>
+
+          {step === 0 && (
+            <div className="grid gap-4 lg:grid-cols-3">
+              <article className="transaction-row rounded-2xl p-5">
+                <Wallet className="mb-4 text-emerald-400" size={26} />
+                <h3 className="font-black">Informe uma base</h3>
+                <p className="muted-text mt-2 text-sm leading-6">Sua renda mensal deixa os alertas, saldo previsto e saúde financeira mais precisos.</p>
+              </article>
+              <article className="transaction-row rounded-2xl p-5">
+                <CreditCard className="mb-4 text-emerald-400" size={26} />
+                <h3 className="font-black">Organize cartões e fixos</h3>
+                <p className="muted-text mt-2 text-sm leading-6">Cartões, assinaturas e contas recorrentes ajudam a prever o mês com mais clareza.</p>
+              </article>
+              <article className="transaction-row rounded-2xl p-5">
+                <Target className="mb-4 text-emerald-400" size={26} />
+                <h3 className="font-black">Tenha um objetivo</h3>
+                <p className="muted-text mt-2 text-sm leading-6">Uma meta principal deixa o dashboard mais direcionado para o que você quer alcançar.</p>
+              </article>
+            </div>
+          )}
+
+          {step === 1 && (
+            <form onSubmit={finish} className="grid gap-4 lg:grid-cols-[1fr_1fr]">
+              <Field label="Renda mensal aproximada">
+                <input type="number" min="0" step="0.01" value={preferencesForm.monthly_income} onChange={(event) => update("monthly_income", event.target.value)} className="input" placeholder="Ex.: 3200,00" />
+              </Field>
+              <Field label="Principal objetivo">
+                <input value={preferencesForm.main_goal} onChange={(event) => update("main_goal", event.target.value)} className="input" placeholder="Ex.: montar reserva de emergência" />
+              </Field>
+              <Field label="Moeda">
+                <select value={preferencesForm.currency || "BRL"} onChange={(event) => update("currency", event.target.value)} className="input">
+                  <option value="BRL">Real brasileiro</option>
+                </select>
+              </Field>
+              <Field label="Tema padrão">
+                <select value={preferencesForm.default_theme || "system"} onChange={(event) => update("default_theme", event.target.value)} className="input">
+                  <option value="system">Automático pelo sistema</option>
+                  <option value="dark">Escuro</option>
+                  <option value="light">Claro</option>
+                </select>
+              </Field>
+              <div className="lg:col-span-2 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4 text-sm font-semibold text-emerald-300">
+                Dica: você não precisa preencher tudo agora. O app continua funcionando normalmente e você pode ajustar depois na aba Conta.
+              </div>
+            </form>
+          )}
+
+          {step === 2 && (
+            <div className="grid gap-3 md:grid-cols-2">
+              {checklist.map((item) => (
+                <button key={item.title} type="button" onClick={() => openArea(item.action)} className="transaction-row flex items-start gap-4 rounded-2xl p-4 text-left transition hover:scale-[1.01]">
+                  <span className={classNames("mt-1 flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl", item.done ? "bg-emerald-500/15 text-emerald-300" : "bg-slate-500/10 text-slate-300")}>
+                    {item.done ? <CheckCircle2 size={19} /> : <Plus size={18} />}
+                  </span>
+                  <span>
+                    <strong className="block font-black">{item.title}</strong>
+                    <span className="muted-text mt-1 block text-sm leading-6">{item.text}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {step === 3 && (
+            <div className="grid gap-4 lg:grid-cols-[1.05fr_0.95fr] lg:items-stretch">
+              <div className="rounded-[1.5rem] border border-emerald-500/20 bg-emerald-500/10 p-5">
+                <CheckCircle2 className="mb-4 text-emerald-300" size={32} />
+                <h3 className="text-xl font-black text-emerald-300">Pronto para começar</h3>
+                <p className="mt-3 text-sm font-semibold leading-7 text-emerald-100/85">
+                  Ao finalizar, o painel deixa de mostrar a configuração inicial. Você ainda poderá ajustar renda, objetivo, tema, backup e conta na aba Conta.
+                </p>
+              </div>
+              <div className="grid gap-3">
+                <button type="button" onClick={() => openArea("transactions")} className="outline-button rounded-2xl px-4 py-3 text-left font-black">Começar lançando uma despesa</button>
+                <button type="button" onClick={() => openArea("cards")} className="outline-button rounded-2xl px-4 py-3 text-left font-black">Cadastrar cartão primeiro</button>
+                <button type="button" onClick={() => openArea("recurring")} className="outline-button rounded-2xl px-4 py-3 text-left font-black">Cadastrar fixos principais</button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="edit-modal-footer flex flex-col-reverse gap-3 border-t border-white/10 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+          <button type="button" onClick={skip} disabled={saving} className="outline-button rounded-2xl px-4 py-3 text-sm font-black disabled:opacity-60">
+            Pular por enquanto
+          </button>
+
+          <div className="flex flex-col gap-2 sm:flex-row">
+            {step > 0 && (
+              <button type="button" onClick={() => setStep((current) => Math.max(0, current - 1))} className="ghost-button rounded-2xl px-4 py-3 text-sm font-black">
+                Voltar
+              </button>
+            )}
+            {step < steps.length - 1 ? (
+              <button type="button" onClick={() => setStep((current) => Math.min(steps.length - 1, current + 1))} className="rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-black text-white transition hover:bg-emerald-700">
+                Próximo
+              </button>
+            ) : (
+              <button type="button" onClick={finish} disabled={saving} className="rounded-2xl bg-emerald-600 px-5 py-3 text-sm font-black text-white transition hover:bg-emerald-700 disabled:opacity-60">
+                {saving ? "Salvando..." : "Concluir configuração"}
+              </button>
+            )}
+          </div>
+        </div>
       </div>
-    </section>
+    </div>
   );
 }
 
@@ -8079,21 +9452,126 @@ function NotificationsPanel({ notifications }) {
   );
 }
 
-function InsightsCard({ insights }) {
+function InsightsCard({ insights = [], setPage, onOpenTransactions }) {
+  const [selectedInsight, setSelectedInsight] = useState(null);
+  const [expanded, setExpanded] = useState(false);
+  const safeInsights = Array.isArray(insights) ? insights : [];
+  const visibleInsights = expanded ? safeInsights : safeInsights.slice(0, 4);
+  const hiddenCount = Math.max(0, safeInsights.length - visibleInsights.length);
+
+  function handleAction(insight) {
+    setSelectedInsight(null);
+
+    if (insight?.transactionFilter) {
+      onOpenTransactions?.(insight.transactionFilter);
+      return;
+    }
+
+    if (insight?.page) {
+      setPage?.(normalizeDashboardPage(insight.page));
+    }
+  }
+
   return (
-    <section className="surface-card rounded-[2rem] p-5 shadow-sm">
-      <div className="mb-4 flex items-center gap-3">
-        <div className="rounded-2xl bg-emerald-500/10 p-3 text-emerald-400"><Eye size={20} /></div>
-        <div>
-          <h2 className="text-xl font-black">Insights inteligentes</h2>
-          <p className="muted-text text-sm">Leituras automáticas do seu mês.</p>
+    <section className="surface-card rounded-[2rem] p-4 shadow-sm sm:p-5">
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-emerald-500/10 text-emerald-400">
+            <Eye size={18} />
+          </div>
+          <div>
+            <h2 className="text-lg font-black sm:text-xl">Insights do mês</h2>
+            <p className="muted-text mt-0.5 text-xs font-semibold sm:text-sm">Leituras simples para entender o mês sem exagero.</p>
+          </div>
         </div>
+        {safeInsights.length > 0 && (
+          <span className="rounded-full border border-slate-500/20 px-3 py-1 text-[0.68rem] font-black muted-text">
+            {safeInsights.length} ponto(s)
+          </span>
+        )}
       </div>
-      <div className="space-y-3">
-        {insights.map((item) => (
-          <div key={item} className="transaction-row rounded-2xl p-4 text-sm font-bold leading-6">{item}</div>
-        ))}
+
+      <div className="space-y-2">
+        {visibleInsights.length ? (
+          visibleInsights.map((item) => {
+            return (
+              <button
+                key={item.id || item.title}
+                type="button"
+                onClick={() => setSelectedInsight(item)}
+                className="field-shell interactive-row flex w-full items-start gap-3 rounded-2xl px-4 py-3 text-left transition hover:scale-[1.005]"
+              >
+                <span className={classNames("mt-2 h-2.5 w-2.5 shrink-0 rounded-full", getInsightDotClass(item.tone))} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <strong className="text-sm font-black leading-5">{item.title}</strong>
+                    {item.metric && <span className="text-xs font-black muted-text">{item.metric}</span>}
+                  </div>
+                  <p className="muted-text mt-1 line-clamp-2 text-xs font-semibold leading-5">{item.text}</p>
+                  {item.badge && <p className="mt-1 text-[0.65rem] font-black uppercase tracking-[0.14em] muted-text">{item.badge}</p>}
+                </div>
+                <span className="muted-text mt-1 text-base leading-none">›</span>
+              </button>
+            );
+          })
+        ) : (
+          <EmptyState text="Cadastre mais lançamentos para receber insights automáticos." />
+        )}
       </div>
+
+      {safeInsights.length > 4 && (
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="ghost-button mt-3 w-full rounded-2xl px-4 py-3 text-xs font-black"
+        >
+          {expanded ? "Mostrar menos" : `Ver mais ${hiddenCount} ponto(s)`}
+        </button>
+      )}
+
+      {selectedInsight && (
+        <div className="alert-detail-backdrop fixed inset-0 z-[90] flex items-end justify-center px-4 py-5 sm:items-center" onClick={() => setSelectedInsight(null)} role="dialog" aria-modal="true" aria-label="Detalhe do insight">
+          <div className="surface-card w-full max-w-xl rounded-[2rem] p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className={classNames("flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border", getInsightToneClasses(selectedInsight.tone).icon)}>
+                  {getInsightIcon(selectedInsight)}
+                </div>
+                <div>
+                  <span className="mb-2 inline-flex rounded-full border border-slate-500/20 px-3 py-1 text-xs font-black uppercase tracking-wide muted-text">
+                    {selectedInsight.badge || "Insight"}
+                  </span>
+                  <h3 className="text-xl font-black leading-tight sm:text-2xl">{selectedInsight.title}</h3>
+                  {selectedInsight.metric && <p className="mt-1 text-sm font-black muted-text">{selectedInsight.metric}</p>}
+                </div>
+              </div>
+              <button type="button" onClick={() => setSelectedInsight(null)} className="ghost-button rounded-2xl p-2" aria-label="Fechar insight">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div className="field-shell rounded-[1.5rem] p-4">
+                <p className="text-xs font-black uppercase tracking-[0.12em] muted-text">Como interpretar</p>
+                <p className="mt-2 text-sm font-semibold leading-7">{selectedInsight.text}</p>
+              </div>
+              <div className="field-shell rounded-[1.5rem] p-4">
+                <p className="text-xs font-black uppercase tracking-[0.12em] muted-text">Dica prática</p>
+                <p className="mt-2 text-sm font-semibold leading-7">{selectedInsight.tip}</p>
+              </div>
+            </div>
+
+            <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+              <button type="button" onClick={() => setSelectedInsight(null)} className="outline-button rounded-2xl px-4 py-3 text-sm font-black">Fechar</button>
+              {(selectedInsight.page || selectedInsight.transactionFilter) && (
+                <button type="button" onClick={() => handleAction(selectedInsight)} className={classNames("rounded-2xl px-4 py-3 text-sm font-black transition", getInsightToneClasses(selectedInsight.tone).button)}>
+                  {selectedInsight.actionLabel || "Abrir área"}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -8541,7 +10019,7 @@ function CreditCardInvoicePanel({
       <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <h2 className="text-xl font-black">Controle do cartão {card.name}</h2>
-          <p className="muted-text text-sm">Movimentações acumuladas até {monthLabel(selectedMonth)}.</p>
+          <p className="muted-text text-sm">Movimentações acumuladas até {safeMonthLabel(selectedMonth)}.</p>
         </div>
         <div className="grid gap-1 text-right text-sm">
           <strong className={card.stored_value_card ? "text-emerald-500" : "text-rose-500"}>
@@ -8630,7 +10108,7 @@ function CreditCardInvoicePanel({
           <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h3 className="font-black">Compras parceladas</h3>
-              <p className="muted-text text-xs font-semibold">Resumo agrupado por compra, com progresso até {monthLabel(selectedMonth)}.</p>
+              <p className="muted-text text-xs font-semibold">Resumo agrupado por compra, com progresso até {safeMonthLabel(selectedMonth)}.</p>
             </div>
             <span className="rounded-full bg-blue-500/10 px-3 py-1 text-xs font-black text-blue-400">
               {installmentGroups.length} compra(s)
@@ -8760,7 +10238,7 @@ function FinancialCalendarPage({ selectedMonth, events }) {
   return (
     <main className="surface-card rounded-[2rem] p-5 shadow-sm">
       <h2 className="text-2xl font-black">Calendário financeiro</h2>
-      <p className="muted-text mb-5 text-sm">Lançamentos e itens fixos de {monthLabel(selectedMonth)}.</p>
+      <p className="muted-text mb-5 text-sm">Lançamentos e itens fixos de {safeMonthLabel(selectedMonth)}.</p>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
         {days.map((day) => (
           <div key={day} className="transaction-row min-h-32 rounded-2xl p-3">
@@ -8788,6 +10266,12 @@ function AccountPage({
   preferencesForm,
   setPreferencesForm,
   onPreferencesSubmit,
+  darkMode,
+  setDarkMode,
+  accentColor,
+  setAccentColor,
+  densityMode,
+  setDensityMode,
   exportBackup,
   importBackup,
   deleteAllUserData,
@@ -8877,6 +10361,56 @@ function AccountPage({
                 <span>Cartões</span>
                 <CreditCard size={17} className="text-emerald-400" />
               </button>
+            </div>
+          </section>
+
+          <section id="appearance-settings" className="surface-card rounded-[2rem] p-5 shadow-sm scroll-mt-24">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-black">Aparência</h3>
+                <p className="muted-text mt-1 text-sm">Personalize o visual do app sem alterar seus dados.</p>
+              </div>
+              <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-black text-emerald-400">Local</span>
+            </div>
+
+            <div className="grid gap-4">
+              <div>
+                <p className="mb-2 text-xs font-black uppercase tracking-[0.14em] text-slate-400">Tema</p>
+                <div className="appearance-toggle-grid">
+                  <button type="button" onClick={() => setDarkMode?.(false)} className={classNames("appearance-option", !darkMode && "appearance-option-active")}>Claro</button>
+                  <button type="button" onClick={() => setDarkMode?.(true)} className={classNames("appearance-option", darkMode && "appearance-option-active")}>Escuro</button>
+                </div>
+              </div>
+
+              <div>
+                <p className="mb-2 text-xs font-black uppercase tracking-[0.14em] text-slate-400">Cor principal</p>
+                <div className="accent-choice-grid">
+                  {accentOptions.map((item) => (
+                    <button
+                      key={item.value}
+                      type="button"
+                      onClick={() => setAccentColor?.(item.value)}
+                      className={classNames("accent-choice", accentColor === item.value && "accent-choice-active")}
+                      title={item.label}
+                    >
+                      <span style={{ backgroundColor: item.color }} />
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <p className="mb-2 text-xs font-black uppercase tracking-[0.14em] text-slate-400">Densidade</p>
+                <div className="appearance-toggle-grid">
+                  {densityOptions.map((item) => (
+                    <button key={item.value} type="button" onClick={() => setDensityMode?.(item.value)} className={classNames("appearance-option text-left", densityMode === item.value && "appearance-option-active")}>
+                      <strong className="block">{item.label}</strong>
+                      <span className="muted-text mt-1 block text-[0.68rem] leading-4">{item.helper}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           </section>
         </div>
@@ -9006,7 +10540,7 @@ function ReportsPage({ summary, selectedMonth, visibleTransactions, topExpenses,
       </section>
 
       <section className="grid gap-4 md:grid-cols-4">
-        <MetricCard title={`Receitas em ${monthLabel(selectedMonth)}`} value={money.format(summary.income)} icon={<ArrowUpCircle />} tone="emerald" onClick={() => onOpenTransactions?.({ types: ["income"] })} info="Clique para abrir os lançamentos filtrando apenas receitas deste mês." />
+        <MetricCard title={`Receitas em ${safeMonthLabel(selectedMonth)}`} value={money.format(summary.income)} icon={<ArrowUpCircle />} tone="emerald" onClick={() => onOpenTransactions?.({ types: ["income"] })} info="Clique para abrir os lançamentos filtrando apenas receitas deste mês." />
         <MetricCard title="Despesas" value={money.format(summary.expense)} icon={<ArrowDownCircle />} tone="rose" onClick={() => onOpenTransactions?.({ types: ["expense"] })} info="Clique para abrir os lançamentos filtrando apenas despesas deste mês." />
         <MetricCard title="Saldo" value={money.format(summary.balance)} icon={<Wallet />} tone={summary.balance >= 0 ? "blue" : "rose"} info="Receitas menos despesas do mês selecionado." />
         <MetricCard title="Lançamentos" value={String(visibleTransactions.length)} icon={<FileText />} tone="amber" onClick={() => onOpenTransactions?.()} info="Quantidade de lançamentos encontrados com os filtros atuais." />
@@ -9093,19 +10627,21 @@ function InfoList({ title, items, empty }) {
 }
 
 function MonthSelector({ value, onChange, years }) {
-  const [year, month] = value.split("-");
+  const safeValue = ensureMonthValue(value);
+  const [year, month] = safeValue.split("-");
+  const safeYears = Array.isArray(years) && years.length ? years : [Number(year)];
 
   function updateMonth(nextMonth) {
-    onChange(`${year}-${nextMonth}`);
+    onChange(ensureMonthValue(`${year}-${nextMonth}`));
   }
 
   function updateYear(nextYear) {
-    onChange(`${nextYear}-${month}`);
+    onChange(ensureMonthValue(`${nextYear}-${month}`));
   }
 
   function moveMonth(offset) {
     const date = new Date(Number(year), Number(month) - 1 + offset, 1);
-    onChange(date.toISOString().slice(0, 7));
+    onChange(dateToISODate(date).slice(0, 7));
   }
 
   return (
@@ -9118,7 +10654,7 @@ function MonthSelector({ value, onChange, years }) {
         </select>
         <span className="muted-text font-black">/</span>
         <select value={year} onChange={(event) => updateYear(event.target.value)} className="year-select bg-transparent font-bold outline-none" aria-label="Selecionar ano">
-          {years.map((item) => <option key={item} value={item}>{item}</option>)}
+          {safeYears.map((item) => <option key={item} value={item}>{item}</option>)}
         </select>
       </div>
       <button type="button" onClick={() => moveMonth(1)} className="month-nav-button" aria-label="Próximo mês">›</button>
@@ -9384,6 +10920,13 @@ function GlobalStyles() {
         --muted: #526174;
         --border: #d9e3ee;
         --hover: #edf7f4;
+        --accent-300: #6ee7b7;
+        --accent-400: #34d399;
+        --accent-500: #10b981;
+        --accent-600: #059669;
+        --accent-700: #047857;
+        --accent-soft: rgba(16, 185, 129, 0.12);
+        --accent-ring: rgba(16, 185, 129, 0.24);
         --shadow: 0 18px 50px rgba(15, 23, 42, 0.08);
         --soft-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
         background:
@@ -9404,6 +10947,42 @@ function GlobalStyles() {
         --shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
         --soft-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
         background: var(--bg);
+      }
+      .app-shell.accent-blue {
+        --accent-300: #93c5fd;
+        --accent-400: #60a5fa;
+        --accent-500: #3b82f6;
+        --accent-600: #2563eb;
+        --accent-700: #1d4ed8;
+        --accent-soft: rgba(59, 130, 246, 0.12);
+        --accent-ring: rgba(59, 130, 246, 0.24);
+      }
+      .app-shell.accent-violet {
+        --accent-300: #c4b5fd;
+        --accent-400: #a78bfa;
+        --accent-500: #8b5cf6;
+        --accent-600: #7c3aed;
+        --accent-700: #6d28d9;
+        --accent-soft: rgba(139, 92, 246, 0.12);
+        --accent-ring: rgba(139, 92, 246, 0.24);
+      }
+      .app-shell.accent-cyan {
+        --accent-300: #67e8f9;
+        --accent-400: #22d3ee;
+        --accent-500: #06b6d4;
+        --accent-600: #0891b2;
+        --accent-700: #0e7490;
+        --accent-soft: rgba(6, 182, 212, 0.12);
+        --accent-ring: rgba(6, 182, 212, 0.24);
+      }
+      .app-shell.accent-amber {
+        --accent-300: #fcd34d;
+        --accent-400: #fbbf24;
+        --accent-500: #f59e0b;
+        --accent-600: #d97706;
+        --accent-700: #b45309;
+        --accent-soft: rgba(245, 158, 11, 0.14);
+        --accent-ring: rgba(245, 158, 11, 0.26);
       }
       .surface-card { background: var(--surface); color: var(--text); border: 1px solid color-mix(in srgb, var(--border) 72%, transparent); box-shadow: var(--soft-shadow); transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease; }
       .home-header { background: rgba(255, 255, 255, 0.88); color: var(--text); border: 1px solid rgba(203, 213, 225, 0.78); box-shadow: var(--soft-shadow); }
@@ -10483,6 +12062,117 @@ function GlobalStyles() {
         to { opacity: 1; transform: translateY(0) scale(1); }
       }
 
+      .appearance-toggle-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.55rem;
+      }
+      .appearance-option {
+        border: 1px solid var(--border);
+        background: color-mix(in srgb, var(--surface-2) 82%, transparent);
+        color: var(--text);
+        border-radius: 1rem;
+        padding: 0.75rem 0.85rem;
+        font-size: 0.82rem;
+        font-weight: 950;
+        transition: border-color .2s ease, background-color .2s ease, transform .2s ease, box-shadow .2s ease;
+      }
+      .appearance-option:hover {
+        transform: translateY(-1px);
+        border-color: var(--accent-ring);
+      }
+      .appearance-option-active {
+        border-color: var(--accent-500);
+        background: var(--accent-soft);
+        box-shadow: 0 0 0 3px var(--accent-ring);
+      }
+      .accent-choice-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.55rem;
+      }
+      .accent-choice {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.55rem;
+        border: 1px solid var(--border);
+        background: color-mix(in srgb, var(--surface-2) 82%, transparent);
+        color: var(--text);
+        border-radius: 1rem;
+        padding: 0.7rem 0.8rem;
+        font-size: 0.78rem;
+        font-weight: 950;
+        transition: border-color .2s ease, background-color .2s ease, transform .2s ease, box-shadow .2s ease;
+      }
+      .accent-choice span {
+        width: 0.85rem;
+        height: 0.85rem;
+        border-radius: 999px;
+        box-shadow: 0 0 0 4px rgba(255,255,255,0.05);
+      }
+      .accent-choice:hover { transform: translateY(-1px); border-color: var(--accent-ring); }
+      .accent-choice-active {
+        border-color: var(--accent-500);
+        background: var(--accent-soft);
+        box-shadow: 0 0 0 3px var(--accent-ring);
+      }
+
+      .app-shell .dashboard-tab-active,
+      .app-shell .mobile-bottom-active,
+      .app-shell .mobile-fab-button,
+      .app-shell .fab-main-button {
+        background: linear-gradient(135deg, var(--accent-600), var(--accent-500)) !important;
+        box-shadow: 0 14px 28px color-mix(in srgb, var(--accent-500) 24%, transparent) !important;
+      }
+      .app-shell .dashboard-user-pill,
+      .app-shell .alert-icon,
+      .app-shell .home-eyebrow,
+      .app-shell .demo-badge-pulse {
+        border-color: var(--accent-ring) !important;
+        background: var(--accent-soft) !important;
+        color: var(--accent-400) !important;
+      }
+      .app-shell .text-emerald-300,
+      .app-shell .text-emerald-400,
+      .app-shell .text-emerald-500 {
+        color: var(--accent-400) !important;
+      }
+      .app-shell .bg-emerald-500,
+      .app-shell .bg-emerald-600,
+      .app-shell .bg-emerald-700 {
+        background-color: var(--accent-600) !important;
+      }
+      .app-shell .bg-emerald-500\/10,
+      .app-shell .bg-emerald-600\/10 {
+        background-color: var(--accent-soft) !important;
+      }
+      .app-shell .border-emerald-500\/20,
+      .app-shell .border-emerald-500\/30 {
+        border-color: var(--accent-ring) !important;
+      }
+      .app-shell .hover\:bg-emerald-700:hover,
+      .app-shell .hover\:bg-emerald-600:hover {
+        background-color: var(--accent-700) !important;
+      }
+
+      .app-shell.density-compact .surface-card,
+      .app-shell.density-compact .transaction-row,
+      .app-shell.density-compact .field-shell {
+        border-radius: 1.25rem !important;
+      }
+      .app-shell.density-compact .surface-card { padding: 1rem !important; }
+      .app-shell.density-compact .input {
+        min-height: 2.45rem;
+        padding-top: 0.55rem;
+        padding-bottom: 0.55rem;
+      }
+      .app-shell.density-compact .dashboard-tab-button,
+      .app-shell.density-compact .outline-button,
+      .app-shell.density-compact .ghost-button {
+        min-height: 2.25rem;
+      }
+      .app-shell.density-compact .transaction-row { padding: 0.75rem !important; }
+
       /* PWA / Mobile refinements */
       .mobile-quick-shortcuts,
       .mobile-fab-button,
@@ -11296,8 +12986,494 @@ function GlobalStyles() {
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(16, 185, 129, 0.8);
+  background: rgba(16, 185, 129, 0.8);not
 }
+
+
+      /* Header dividido: marca à esquerda e controles em pílula separada */
+      .dashboard-header-split {
+        min-height: auto !important;
+        padding: 0 !important;
+        border: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        border-radius: 0 !important;
+        align-items: stretch;
+      }
+      .dashboard-brand-card,
+      .dashboard-controls-pill {
+        border-radius: 1.35rem !important;
+        padding: 0.62rem 0.78rem !important;
+      }
+      .dashboard-brand-card {
+        min-height: 3.4rem;
+        flex: 1 1 auto;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+      .dashboard-brand-main {
+        display: flex;
+        align-items: center;
+        gap: 0.7rem;
+        min-width: 0;
+      }
+      .dashboard-brand-context {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 0.55rem;
+        min-width: 0;
+        color: var(--muted);
+        font-size: 0.78rem;
+        font-weight: 900;
+        white-space: nowrap;
+      }
+      .dashboard-brand-context-pill {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        border: 1px solid color-mix(in srgb, var(--primary) 35%, transparent);
+        background: color-mix(in srgb, var(--primary) 12%, transparent);
+        color: var(--primary-strong);
+        padding: 0.28rem 0.65rem;
+        line-height: 1;
+      }
+      .dashboard-brand-context-text {
+        color: var(--muted);
+      }
+      .dashboard-brand-context-balance {
+        font-size: 0.78rem;
+        max-width: 230px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .dashboard-controls-pill {
+        min-height: 3.4rem;
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 0.45rem;
+      }
+      .dashboard-header-split .dashboard-logo-premium {
+        height: 2rem !important;
+        width: 2rem !important;
+        border-radius: 0.75rem !important;
+      }
+      .dashboard-header-split .dashboard-title-premium {
+        font-size: clamp(0.98rem, 1.45vw, 1.18rem);
+      }
+      .dashboard-header-split .month-selector {
+        background: color-mix(in srgb, var(--surface-2) 76%, transparent) !important;
+        border-color: color-mix(in srgb, var(--border) 78%, transparent) !important;
+        box-shadow: none !important;
+      }
+      .dashboard-header-split .account-menu-button {
+        background: color-mix(in srgb, var(--surface-2) 76%, transparent) !important;
+        box-shadow: none !important;
+      }
+
+      @media (max-width: 1024px) and (min-width: 769px) {
+        .dashboard-brand-context-balance {
+          display: none !important;
+        }
+      }
+
+      @media (max-width: 768px) {
+        .dashboard-header-split {
+          position: sticky;
+          top: 0.65rem;
+          z-index: 30;
+          display: grid !important;
+          grid-template-columns: 1fr;
+          gap: 0.55rem !important;
+          padding: 0 !important;
+          background: transparent !important;
+          backdrop-filter: none !important;
+        }
+        .dashboard-header-split .dashboard-brand-card {
+          width: 100%;
+          min-height: 3rem;
+          padding: 0.58rem 0.72rem !important;
+          border-radius: 1.25rem !important;
+        }
+        .dashboard-header-split .dashboard-brand-context {
+          display: none !important;
+        }
+        .dashboard-header-split .dashboard-controls-pill {
+          width: 100% !important;
+          min-height: 2.9rem;
+          padding: 0.42rem !important;
+          border-radius: 1.25rem !important;
+          display: grid !important;
+          grid-template-columns: minmax(0, 1fr) 2.45rem;
+          align-items: center;
+          gap: 0.45rem !important;
+        }
+        .dashboard-header-split .dashboard-controls-pill .month-selector {
+          width: 100% !important;
+          min-width: 0 !important;
+          max-width: none !important;
+        }
+        .dashboard-header-split .dashboard-controls-pill .account-menu-button {
+          width: 2.45rem !important;
+          height: 2.45rem !important;
+          min-height: 2.45rem !important;
+          padding: 0 !important;
+          justify-content: center !important;
+          border-radius: 1rem !important;
+          font-size: 0 !important;
+        }
+        .dashboard-header-split .dashboard-controls-pill .account-menu-name,
+        .dashboard-header-split .dashboard-controls-pill .account-menu-caret {
+          display: none !important;
+        }
+      }
+
+
+
+      /* Header + menu em barra única */
+      .dashboard-unified-topbar {
+        position: relative;
+        z-index: 45;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 0.62rem;
+        min-height: 3.45rem;
+        padding: 0.48rem 0.58rem;
+        border-radius: 1.25rem !important;
+        overflow: visible;
+      }
+      .dashboard-unified-brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.58rem;
+        min-width: 0;
+        max-width: 16rem;
+        padding-left: 0.05rem;
+        white-space: nowrap;
+        overflow: hidden;
+      }
+      .dashboard-unified-logo {
+        height: 2rem;
+        width: 2rem;
+        flex: 0 0 auto;
+        border-radius: 0.72rem;
+        box-shadow: 0 10px 22px rgba(2, 6, 23, 0.24);
+      }
+      .dashboard-unified-title {
+        margin: 0;
+        max-width: 13rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: clamp(0.96rem, 1.2vw, 1.12rem);
+        line-height: 1;
+        font-weight: 950;
+        letter-spacing: -0.04em;
+      }
+      .dashboard-unified-nav {
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.26rem;
+        overflow: visible;
+      }
+      .dashboard-unified-tab {
+        min-height: 2.12rem !important;
+        padding: 0.45rem 0.64rem !important;
+        border-radius: 0.9rem !important;
+        font-size: 0.76rem !important;
+        white-space: nowrap;
+        flex: 0 0 auto;
+      }
+      .dashboard-unified-actions {
+        display: inline-flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 0.4rem;
+        min-width: 0;
+        flex: 0 0 auto;
+      }
+      .dashboard-unified-actions .month-selector {
+        min-height: 2.18rem;
+        padding: 0.18rem 0.3rem;
+        border-radius: 0.95rem;
+        background: color-mix(in srgb, var(--surface-2) 76%, transparent) !important;
+        border-color: color-mix(in srgb, var(--border) 82%, transparent) !important;
+        box-shadow: none !important;
+      }
+      .dashboard-unified-actions .account-menu-button {
+        min-height: 2.18rem;
+        border-radius: 0.95rem !important;
+        background: color-mix(in srgb, var(--surface-2) 76%, transparent) !important;
+        box-shadow: none !important;
+      }
+      .dashboard-unified-actions .account-menu-name {
+        max-width: 9rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .dashboard-unified-topbar .dashboard-more-panel {
+        top: calc(100% + 0.55rem);
+      }
+
+      @media (max-width: 1360px) and (min-width: 769px) {
+        .dashboard-unified-topbar {
+          gap: 0.48rem;
+        }
+        .dashboard-unified-brand {
+          max-width: 12.5rem;
+        }
+        .dashboard-unified-title {
+          max-width: 10rem;
+          font-size: 0.98rem;
+        }
+        .dashboard-unified-tab {
+          padding-inline: 0.54rem !important;
+          gap: 0.34rem !important;
+        }
+        .dashboard-unified-tab span {
+          font-size: 0.72rem;
+        }
+        .dashboard-unified-actions .account-menu-name {
+          max-width: 7.2rem;
+        }
+      }
+
+      @media (max-width: 1220px) and (min-width: 769px) {
+        .dashboard-unified-brand {
+          max-width: 9.2rem;
+        }
+        .dashboard-unified-title {
+          max-width: 6.8rem;
+        }
+        .dashboard-unified-nav {
+          justify-content: flex-start;
+          gap: 0.2rem;
+        }
+        .dashboard-unified-tab:not(.dashboard-tab-active) {
+          width: 2.18rem;
+          padding-inline: 0 !important;
+          justify-content: center !important;
+        }
+        .dashboard-unified-tab:not(.dashboard-tab-active) > span:not(.text-xs) {
+          display: none !important;
+        }
+        .dashboard-unified-tab:not(.dashboard-tab-active) > .text-xs {
+          display: none !important;
+        }
+        .dashboard-unified-tab.dashboard-tab-active {
+          padding-inline: 0.62rem !important;
+        }
+        .dashboard-unified-actions .month-selector {
+          padding-inline: 0.2rem;
+        }
+        .month-selector-compact .month-select {
+          max-width: 5.8rem;
+        }
+        .month-selector-compact .year-select {
+          width: 3.65rem;
+        }
+      }
+
+      @media (max-width: 1080px) and (min-width: 769px) {
+        .dashboard-unified-brand {
+          max-width: 2.2rem;
+          gap: 0;
+        }
+        .dashboard-unified-title {
+          display: none;
+        }
+        .dashboard-unified-tab.dashboard-tab-active > span:not(.text-xs) {
+          display: inline-flex;
+          max-width: 5.6rem;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .dashboard-unified-actions .account-menu-name {
+          max-width: 5.6rem;
+        }
+        .dashboard-unified-actions .month-selector-center svg {
+          display: none;
+        }
+        .month-selector-center {
+          padding-inline: 0.2rem;
+          gap: 0.18rem;
+        }
+      }
+
+      @media (max-width: 980px) and (min-width: 769px) {
+        .dashboard-unified-topbar {
+          grid-template-columns: auto minmax(0, 1fr);
+          align-items: center;
+        }
+        .dashboard-unified-actions {
+          grid-column: 1 / -1;
+          justify-content: flex-end;
+          width: 100%;
+        }
+      }
+
+      @media (max-width: 768px) {
+        .dashboard-unified-topbar {
+          position: sticky;
+          top: 0.65rem;
+          z-index: 45;
+          grid-template-columns: 1fr;
+          gap: 0.55rem;
+          min-height: auto;
+          padding: 0.7rem;
+          border-radius: 1.45rem !important;
+        }
+        .dashboard-unified-brand {
+          width: 100%;
+          max-width: none;
+        }
+        .dashboard-unified-logo {
+          height: 2.15rem;
+          width: 2.15rem;
+          border-radius: 0.82rem;
+        }
+        .dashboard-unified-title {
+          display: block;
+          font-size: 1.05rem;
+          max-width: calc(100vw - 7rem);
+        }
+        .dashboard-unified-nav {
+          display: none !important;
+        }
+        .dashboard-unified-actions {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) 2.45rem;
+          gap: 0.45rem;
+          width: 100%;
+        }
+        .dashboard-unified-actions .month-selector {
+          width: 100% !important;
+          min-width: 0 !important;
+          max-width: none !important;
+        }
+        .dashboard-unified-actions .account-menu-button {
+          width: 2.45rem !important;
+          height: 2.45rem !important;
+          min-height: 2.45rem !important;
+          padding: 0 !important;
+          justify-content: center !important;
+          border-radius: 1rem !important;
+          font-size: 0 !important;
+        }
+        .dashboard-unified-actions .account-menu-name,
+        .dashboard-unified-actions .account-menu-caret {
+          display: none !important;
+        }
+      }
+
+
+      /* PWA polish after unified desktop header */
+      @media (max-width: 768px) {
+        .dashboard-unified-topbar {
+          top: max(0.55rem, env(safe-area-inset-top));
+          padding: 0.58rem !important;
+          gap: 0.42rem !important;
+          border-radius: 1.25rem !important;
+        }
+
+        .dashboard-unified-brand {
+          gap: 0.5rem !important;
+        }
+
+        .dashboard-unified-logo {
+          width: 2rem !important;
+          height: 2rem !important;
+          border-radius: 0.78rem !important;
+        }
+
+        .dashboard-unified-title {
+          font-size: 0.98rem !important;
+          line-height: 1.05rem !important;
+          max-width: calc(100vw - 7.25rem) !important;
+        }
+
+        .dashboard-unified-actions {
+          grid-template-columns: minmax(0, 1fr) 2.32rem !important;
+          gap: 0.36rem !important;
+        }
+
+        .dashboard-unified-actions .month-selector,
+        .dashboard-unified-actions .account-menu-button {
+          min-height: 2.32rem !important;
+          height: 2.32rem !important;
+        }
+
+        .dashboard-unified-actions .account-menu-button {
+          width: 2.32rem !important;
+          border-radius: 0.92rem !important;
+        }
+
+        .dashboard-unified-actions .month-selector-center {
+          gap: 0.22rem !important;
+        }
+
+        .dashboard-unified-actions .month-select {
+          max-width: 7rem !important;
+        }
+
+        .dashboard-unified-actions .year-select {
+          width: 4.2rem !important;
+        }
+
+        .mobile-action-sheet,
+        .mobile-more-sheet {
+          max-height: calc(100dvh - 8.2rem - env(safe-area-inset-top));
+          overflow-y: auto;
+          overscroll-behavior: contain;
+        }
+
+        .mobile-action-sheet {
+          bottom: calc(5.65rem + env(safe-area-inset-bottom)) !important;
+        }
+
+        .mobile-more-sheet {
+          bottom: calc(5.2rem + env(safe-area-inset-bottom)) !important;
+        }
+
+        .mobile-bottom-nav {
+          z-index: 58 !important;
+        }
+
+        .mobile-fab-button {
+          z-index: 59 !important;
+        }
+      }
+
+      @media (max-width: 390px) {
+        .dashboard-unified-title {
+          max-width: 12rem !important;
+        }
+
+        .dashboard-unified-actions .month-select {
+          max-width: 5.8rem !important;
+        }
+
+        .dashboard-unified-actions .year-select {
+          width: 3.75rem !important;
+        }
+
+        .mobile-bottom-button {
+          font-size: 0.58rem !important;
+        }
+
+        .mobile-bottom-button span {
+          max-width: 3.2rem !important;
+        }
+      }
+
     `}</style>
   );
 }
