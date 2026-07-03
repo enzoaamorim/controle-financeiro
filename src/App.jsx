@@ -410,6 +410,12 @@ function toNumber(value) {
   return Number(String(value || "").replace(",", "."));
 }
 
+function roundMoneyValue(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return 0;
+  return Number(number.toFixed(2));
+}
+
 function daysInMonth(year, month) {
   return new Date(Number(year), Number(month), 0).getDate();
 }
@@ -630,6 +636,31 @@ function normalizePaymentAllocation(row) {
   };
 }
 
+function normalizeInvoiceInstallmentPlan(row) {
+  return {
+    ...row,
+    total_amount: Number(row?.total_amount || 0),
+    entry_amount: Number(row?.entry_amount || 0),
+    financed_amount: Number(row?.financed_amount || 0),
+    installments: clampInvoiceInstallments(row?.installments || 1),
+    monthly_amount: Number(row?.monthly_amount || 0),
+    source_type: row?.source_type || "manual",
+    reference_month: row?.reference_month || getCurrentMonth(),
+    first_due_date: row?.first_due_date || todayISODate(),
+    status: row?.status || "active",
+  };
+}
+
+function normalizeInvoiceInstallmentPayment(row) {
+  return {
+    ...row,
+    amount: Number(row?.amount || 0),
+    installment_number: row?.installment_number ? Number(row.installment_number) : null,
+    payment_type: row?.payment_type || "installment",
+    payment_date: row?.payment_date || todayISODate(),
+  };
+}
+
 function normalizePreferences(row) {
   return {
     ...row,
@@ -715,6 +746,70 @@ function clampInstallments(value) {
   const number = Number(value || 1);
   if (!Number.isFinite(number)) return 1;
   return Math.min(60, Math.max(1, Math.floor(number)));
+}
+
+function clampInvoiceInstallments(value) {
+  const number = Number(value || 1);
+  if (!Number.isFinite(number)) return 1;
+  return Math.min(60, Math.max(1, Math.floor(number)));
+}
+
+function getInvoicePlanSourceLabel(sourceType) {
+  if (sourceType === "current_month") return "Fatura do mês";
+  if (sourceType === "open_total") return "Valor em aberto";
+  return "Valor manual";
+}
+
+function buildInvoiceInstallmentSummary(plan, payments = []) {
+  const relatedPayments = payments.filter((payment) => payment.invoice_installment_id === plan.id);
+  const paidAmount = roundMoneyValue(relatedPayments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0));
+  const totalAmount = Number(plan.total_amount || 0);
+  const financedAmount = Number(plan.financed_amount || Math.max(0, totalAmount - Number(plan.entry_amount || 0)));
+  const installments = clampInvoiceInstallments(plan.installments || 1);
+  const monthlyAmount = Number(plan.monthly_amount || (installments > 0 ? financedAmount / installments : 0));
+  const paidInstallmentsSet = new Set(
+    relatedPayments
+      .filter((payment) => payment.payment_type === "installment" && Number(payment.installment_number || 0) > 0)
+      .map((payment) => Number(payment.installment_number))
+  );
+
+  let nextInstallmentNumber = 0;
+  for (let index = 1; index <= installments; index += 1) {
+    if (!paidInstallmentsSet.has(index)) {
+      nextInstallmentNumber = index;
+      break;
+    }
+  }
+
+  const openAmount = Math.max(0, roundMoneyValue(totalAmount - paidAmount));
+  const financedPaidAmount = roundMoneyValue(relatedPayments.filter((payment) => payment.payment_type !== "entry").reduce((sum, payment) => sum + Number(payment.amount || 0), 0));
+  const financedOpenAmount = Math.max(0, roundMoneyValue(financedAmount - financedPaidAmount));
+  const progress = totalAmount > 0 ? Math.min(100, Math.round((paidAmount / totalAmount) * 100)) : 0;
+  const nextDueDate = nextInstallmentNumber && plan.first_due_date ? addMonthsToISO(plan.first_due_date, nextInstallmentNumber - 1) : "";
+  const lastDueDate = plan.first_due_date ? addMonthsToISO(plan.first_due_date, installments - 1) : "";
+  const today = todayISODate();
+  const isLate = plan.status === "active" && nextDueDate && nextDueDate < today && openAmount > 0;
+  const isConcluded = plan.status === "concluded" || openAmount <= 0 || paidInstallmentsSet.size >= installments;
+
+  return {
+    relatedPayments,
+    paidAmount,
+    totalAmount,
+    financedAmount,
+    financedPaidAmount,
+    financedOpenAmount,
+    installments,
+    monthlyAmount,
+    paidInstallments: paidInstallmentsSet.size,
+    nextInstallmentNumber,
+    nextDueDate,
+    lastDueDate,
+    openAmount,
+    progress,
+    isLate,
+    isConcluded,
+    statusLabel: plan.status === "cancelled" ? "Cancelado" : isConcluded ? "Concluído" : isLate ? "Atrasado" : "Ativo",
+  };
 }
 
 function getCleanInstallmentDescription(description) {
@@ -1456,7 +1551,7 @@ function HomePage({ darkMode, setDarkMode, session, onStart, onLogin, onDashboar
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-7xl flex-col gap-8 px-4 py-5 sm:px-6 lg:px-8">
+    <div className="home-cinematic mx-auto flex w-full max-w-7xl flex-col gap-8 px-4 py-5 sm:px-6 lg:px-8">
       <header className="home-header sticky top-4 z-20 rounded-[2rem] px-4 py-3 backdrop-blur md:px-5">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-3">
@@ -2671,6 +2766,8 @@ function Dashboard({ darkMode, setDarkMode, accentColor, setAccentColor, density
   const [creditCards, setCreditCards] = useState([]);
   const [cardAdjustments, setCardAdjustments] = useState([]);
   const [paymentAllocations, setPaymentAllocations] = useState([]);
+  const [invoiceInstallments, setInvoiceInstallments] = useState([]);
+  const [invoiceInstallmentPayments, setInvoiceInstallmentPayments] = useState([]);
   const [preferences, setPreferences] = useState(null);
 
   const [query, setQuery] = useState("");
@@ -2835,7 +2932,18 @@ function Dashboard({ darkMode, setDarkMode, accentColor, setAccentColor, density
     hideToast();
 
     try {
-      const [transactionsResult, goalsResult, limitsResult, recurringResult, cardsResult, cardAdjustmentsResult, paymentAllocationsResult, preferencesResult] = await Promise.all([
+      const [
+        transactionsResult,
+        goalsResult,
+        limitsResult,
+        recurringResult,
+        cardsResult,
+        cardAdjustmentsResult,
+        paymentAllocationsResult,
+        preferencesResult,
+        invoiceInstallmentsResult,
+        invoiceInstallmentPaymentsResult,
+      ] = await Promise.all([
         supabase.from("transactions").select("*").eq("user_id", user.id).order("date", { ascending: false }),
         supabase.from("goals").select("*").eq("user_id", user.id).order("created_at", { ascending: false }),
         supabase.from("category_limits").select("*").eq("user_id", user.id).order("category", { ascending: true }),
@@ -2844,10 +2952,20 @@ function Dashboard({ darkMode, setDarkMode, accentColor, setAccentColor, density
         supabase.from("card_adjustments").select("*").eq("user_id", user.id).order("date", { ascending: false }),
         supabase.from("payment_allocations").select("*").eq("user_id", user.id).order("payment_date", { ascending: false }),
         supabase.from("user_preferences").select("*").eq("user_id", user.id).limit(1),
+        supabase.from("invoice_installments").select("*").eq("user_id", user.id).order("created_at", { ascending: false }),
+        supabase.from("invoice_installment_payments").select("*").eq("user_id", user.id).order("payment_date", { ascending: false }),
       ]);
 
       const error = transactionsResult.error || goalsResult.error || limitsResult.error || recurringResult.error || cardsResult.error || cardAdjustmentsResult.error || paymentAllocationsResult.error || preferencesResult.error;
       if (error) throw error;
+
+      if (invoiceInstallmentsResult.error || invoiceInstallmentPaymentsResult.error) {
+        setInvoiceInstallments([]);
+        setInvoiceInstallmentPayments([]);
+      } else {
+        setInvoiceInstallments((invoiceInstallmentsResult.data || []).map(normalizeInvoiceInstallmentPlan));
+        setInvoiceInstallmentPayments((invoiceInstallmentPaymentsResult.data || []).map(normalizeInvoiceInstallmentPayment));
+      }
 
       setTransactions((transactionsResult.data || []).map(normalizeTransaction));
       setGoals((goalsResult.data || []).map(normalizeGoal));
@@ -4135,6 +4253,215 @@ function Dashboard({ darkMode, setDarkMode, accentColor, setAccentColor, density
     }
   }
 
+  async function handleInvoiceInstallmentPlanSubmit(plan) {
+    const card = creditCards.find((item) => item.id === plan.card_id);
+    const totalAmount = roundMoneyValue(toNumber(plan.total_amount));
+    const entryAmount = Math.min(totalAmount, Math.max(0, roundMoneyValue(toNumber(plan.entry_amount))));
+    const financedAmount = Math.max(0, roundMoneyValue(totalAmount - entryAmount));
+    const installments = clampInvoiceInstallments(plan.installments);
+    const monthlyAmount = installments > 0 ? roundMoneyValue(financedAmount / installments) : 0;
+    const firstDueDate = plan.first_due_date || todayISODate();
+
+    if (!card) {
+      showToast("Selecione um cartão para parcelar a fatura.", "warning");
+      return false;
+    }
+
+    if (!isCreditLikeCardType(card.card_type)) {
+      showToast("Parcelamento de fatura está disponível apenas para cartões de crédito.", "warning");
+      return false;
+    }
+
+    if (!totalAmount || totalAmount <= 0) {
+      showToast("Informe um valor total de fatura maior que zero.", "warning");
+      return false;
+    }
+
+    if (entryAmount >= totalAmount) {
+      showToast("A entrada precisa ser menor que o valor total da fatura.", "warning");
+      return false;
+    }
+
+    if (!financedAmount || financedAmount <= 0 || installments < 1) {
+      showToast("Informe uma quantidade válida de parcelas para o valor restante.", "warning");
+      return false;
+    }
+
+    try {
+      const { data: createdPlan, error: planError } = await supabase
+        .from("invoice_installments")
+        .insert({
+          user_id: user.id,
+          card_id: card.id,
+          source_type: plan.source_type || "manual",
+          reference_month: ensureMonthValue(plan.reference_month || selectedMonth),
+          total_amount: totalAmount,
+          entry_amount: entryAmount,
+          financed_amount: financedAmount,
+          installments,
+          monthly_amount: monthlyAmount,
+          first_due_date: firstDueDate,
+          status: "active",
+          notes: plan.notes || null,
+        })
+        .select("*")
+        .single();
+
+      if (planError) throw planError;
+
+      if (entryAmount > 0) {
+        const { data: createdAdjustment, error: adjustmentError } = await supabase
+          .from("card_adjustments")
+          .insert({
+            user_id: user.id,
+            card_id: card.id,
+            adjustment_type: "payment",
+            amount: entryAmount,
+            date: todayISODate(),
+            notes: `Entrada do parcelamento de fatura${plan.notes ? ` · ${plan.notes}` : ""}`,
+          })
+          .select("*")
+          .single();
+
+        if (adjustmentError) throw adjustmentError;
+
+        const { error: entryPaymentError } = await supabase.from("invoice_installment_payments").insert({
+          user_id: user.id,
+          invoice_installment_id: createdPlan.id,
+          card_adjustment_id: createdAdjustment?.id || null,
+          payment_type: "entry",
+          installment_number: null,
+          amount: entryAmount,
+          payment_date: todayISODate(),
+          notes: "Entrada registrada automaticamente",
+        });
+
+        if (entryPaymentError) throw entryPaymentError;
+      }
+
+      showToast(`Parcelamento de fatura criado: entrada de ${money.format(entryAmount)} e ${installments}x de ${money.format(monthlyAmount)}.`, "success");
+      await loadAllData();
+      return true;
+    } catch (error) {
+      showToast(`Erro ao criar parcelamento de fatura: ${getErrorMessage(error)}. Rode o SQL de parcelamento de fatura no Supabase antes de usar.`, "error");
+      return false;
+    }
+  }
+
+  async function handleInvoiceInstallmentPaymentSubmit(payment) {
+    const plan = invoiceInstallments.find((item) => item.id === payment.planId);
+
+    if (!plan) {
+      showToast("Parcelamento não encontrado.", "warning");
+      return false;
+    }
+
+    if (plan.status === "cancelled") {
+      showToast("Este parcelamento está cancelado e não pode receber pagamentos.", "warning");
+      return false;
+    }
+
+    const relatedPayments = invoiceInstallmentPayments.filter((item) => item.invoice_installment_id === plan.id);
+    const summary = buildInvoiceInstallmentSummary(plan, relatedPayments);
+    const paymentType = payment.paymentType || "installment";
+    const defaultAmount = paymentType === "settlement" ? summary.openAmount : Math.min(summary.monthlyAmount, summary.openAmount);
+    const amount = roundMoneyValue(toNumber(payment.amount) || defaultAmount);
+
+    if (!amount || amount <= 0) {
+      showToast("Informe um valor de pagamento maior que zero.", "warning");
+      return false;
+    }
+
+    if (summary.openAmount <= 0) {
+      showToast("Este parcelamento já está quitado.", "warning");
+      return false;
+    }
+
+    const safeAmount = Math.min(amount, summary.openAmount);
+    const installmentNumber = paymentType === "installment" ? Number(payment.installmentNumber || summary.nextInstallmentNumber || 1) : null;
+    const card = creditCards.find((item) => item.id === plan.card_id);
+
+    try {
+      const { data: createdAdjustment, error: adjustmentError } = await supabase
+        .from("card_adjustments")
+        .insert({
+          user_id: user.id,
+          card_id: plan.card_id,
+          adjustment_type: "payment",
+          amount: safeAmount,
+          date: payment.paymentDate || todayISODate(),
+          notes:
+            payment.notes ||
+            (paymentType === "settlement"
+              ? `Quitação do parcelamento de fatura${card?.name ? ` · ${card.name}` : ""}`
+              : paymentType === "extra"
+                ? `Abatimento extra do parcelamento de fatura${card?.name ? ` · ${card.name}` : ""}`
+                : `Parcela ${installmentNumber}/${summary.installments} do parcelamento de fatura${card?.name ? ` · ${card.name}` : ""}`),
+        })
+        .select("*")
+        .single();
+
+      if (adjustmentError) throw adjustmentError;
+
+      const { error: paymentError } = await supabase.from("invoice_installment_payments").insert({
+        user_id: user.id,
+        invoice_installment_id: plan.id,
+        card_adjustment_id: createdAdjustment?.id || null,
+        payment_type: paymentType,
+        installment_number: installmentNumber,
+        amount: safeAmount,
+        payment_date: payment.paymentDate || todayISODate(),
+        notes: payment.notes || null,
+      });
+
+      if (paymentError) throw paymentError;
+
+      const paidAfter = roundMoneyValue(summary.paidAmount + safeAmount);
+      const shouldConclude = paymentType === "settlement" || paidAfter >= Number(plan.total_amount || 0) - 0.009 || safeAmount >= summary.openAmount;
+
+      if (shouldConclude) {
+        const { error: updateError } = await supabase
+          .from("invoice_installments")
+          .update({ status: "concluded", updated_at: new Date().toISOString() })
+          .eq("id", plan.id)
+          .eq("user_id", user.id);
+        if (updateError) throw updateError;
+      }
+
+      showToast(shouldConclude ? "Parcelamento de fatura quitado com sucesso." : "Pagamento do parcelamento registrado com sucesso.", "success");
+      await loadAllData();
+      return true;
+    } catch (error) {
+      showToast(`Erro ao registrar pagamento do parcelamento: ${getErrorMessage(error)}`, "error");
+      return false;
+    }
+  }
+
+  function cancelInvoiceInstallmentPlan(id) {
+    openConfirmModal({
+      title: "Cancelar parcelamento de fatura",
+      message: "Deseja cancelar este parcelamento? Os pagamentos já registrados continuarão no histórico do cartão.",
+      confirmText: "Cancelar parcelamento",
+      cancelText: "Voltar",
+      danger: true,
+      onConfirm: async () => {
+        try {
+          const { error } = await supabase
+            .from("invoice_installments")
+            .update({ status: "cancelled", updated_at: new Date().toISOString() })
+            .eq("id", id)
+            .eq("user_id", user.id);
+
+          if (error) throw error;
+          showToast("Parcelamento cancelado. Pagamentos já feitos foram mantidos.", "success");
+          await loadAllData();
+        } catch (error) {
+          showToast(`Erro ao cancelar parcelamento: ${getErrorMessage(error)}`, "error");
+        }
+      },
+    });
+  }
+
   function deleteCardAdjustment(id) {
     openConfirmModal({
       title: "Excluir ajuste do cartão",
@@ -4198,6 +4525,8 @@ function Dashboard({ darkMode, setDarkMode, accentColor, setAccentColor, density
       limits,
       recurring_items: recurringItems,
       credit_cards: creditCards,
+      invoice_installments: invoiceInstallments,
+      invoice_installment_payments: invoiceInstallmentPayments,
     };
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -4231,6 +4560,8 @@ function Dashboard({ darkMode, setDarkMode, accentColor, setAccentColor, density
           if (backup.limits?.length || backup.category_limits?.length) operations.push(supabase.from("category_limits").insert(cleanRows(backup.limits || backup.category_limits)));
           if (backup.recurring_items?.length) operations.push(supabase.from("recurring_items").insert(cleanRows(backup.recurring_items)));
           if (backup.transactions?.length) operations.push(supabase.from("transactions").insert(cleanRows(backup.transactions)));
+          if (backup.invoice_installments?.length) operations.push(supabase.from("invoice_installments").insert(cleanRows(backup.invoice_installments)));
+          if (backup.invoice_installment_payments?.length) operations.push(supabase.from("invoice_installment_payments").insert(cleanRows(backup.invoice_installment_payments)));
           const results = await Promise.all(operations);
           const error = results.find((result) => result.error)?.error;
           if (error) throw error;
@@ -4255,6 +4586,8 @@ function Dashboard({ darkMode, setDarkMode, accentColor, setAccentColor, density
       onConfirm: async () => {
         try {
           const results = await Promise.all([
+            supabase.from("invoice_installment_payments").delete().eq("user_id", user.id),
+            supabase.from("invoice_installments").delete().eq("user_id", user.id),
             supabase.from("transactions").delete().eq("user_id", user.id),
             supabase.from("goals").delete().eq("user_id", user.id),
             supabase.from("category_limits").delete().eq("user_id", user.id),
@@ -4990,7 +5323,7 @@ function Dashboard({ darkMode, setDarkMode, accentColor, setAccentColor, density
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-6 px-4 py-5 pb-28 sm:px-6 lg:px-8 lg:pb-8">
+    <div className="finance-bento-shell mx-auto flex w-full max-w-[1500px] flex-col gap-6 px-4 py-5 pb-28 sm:px-6 lg:px-8 lg:pb-8">
       <EditTransactionModal
         open={Boolean(editingId)}
         form={editForm}
@@ -5180,6 +5513,55 @@ function Dashboard({ darkMode, setDarkMode, accentColor, setAccentColor, density
         </div>
       </header>
 
+      <MobileSimpleHeader
+        userName={userName}
+        currentTab={currentTab}
+        selectedMonth={selectedMonth}
+        onChangeMonth={handleSelectedMonthChange}
+        years={availableYears}
+        onAccount={() => navigateDashboardTab("account")}
+      />
+
+      <section className="finance-bento-hero" aria-label="Resumo rápido do painel">
+        <div className="finance-bento-copy">
+          <span className="finance-bento-eyebrow">
+            {currentTab.icon}
+            {currentTab.label} · {safeMonthLabel(selectedMonth)}
+          </span>
+          <h2>{page === "dashboard" ? "Controle do mês em uma visão mais limpa." : `Área de ${currentTab.label}`}</h2>
+          <p>
+            {headerBalanceLabel}: <strong>{money.format(summary.balance)}</strong>.
+            {financialNotifications.length ? ` ${financialNotifications.length} ponto(s) merecem atenção.` : " Nenhum alerta crítico no momento."}
+          </p>
+          <div className="finance-bento-quick-actions">
+            <button type="button" onClick={() => setPage("transactions")}>
+              <Plus size={16} /> Lançar
+            </button>
+            <button type="button" onClick={() => setPage("payments")}>
+              <CheckCircle2 size={16} /> Pagar
+            </button>
+            <button type="button" onClick={() => setPage("cards")}>
+              <CreditCard size={16} /> Cartões
+            </button>
+          </div>
+        </div>
+
+        <div className="finance-bento-metrics" aria-label="Indicadores do mês">
+          <button type="button" onClick={() => openTransactionsWithFilters({ types: ["income"] })} className="finance-bento-metric finance-bento-income">
+            <span>Receitas</span>
+            <strong>{money.format(summary.income)}</strong>
+          </button>
+          <button type="button" onClick={() => openTransactionsWithFilters({ types: ["expense"] })} className="finance-bento-metric finance-bento-expense">
+            <span>Despesas</span>
+            <strong>{money.format(summary.expense)}</strong>
+          </button>
+          <button type="button" onClick={() => setPage("reports")} className="finance-bento-metric finance-bento-balance">
+            <span>Economia</span>
+            <strong>{summary.savingRate}%</strong>
+          </button>
+        </div>
+      </section>
+
       {preferences && !preferences.onboarding_completed && (
         <OnboardingBanner
           userName={userName}
@@ -5223,22 +5605,38 @@ function Dashboard({ darkMode, setDarkMode, accentColor, setAccentColor, density
       />
 
       {page === "dashboard" && (
-        <DashboardOverview
-          summary={summary}
-          expenseByCategory={expenseByCategory}
-          dailyFlow={dailyFlow}
-          monthlyComparison={monthlyComparison}
-          topExpenses={topExpenses}
-          goals={goals}
-          selectedMonth={selectedMonth}
-          setPage={setPage}
-          insights={smartInsights}
-          notifications={financialNotifications}
-          cardUsage={cardUsage}
-          healthStatus={financialHealth}
-          onOpenTransactions={openTransactionsWithFilters}
-          onSelectMonth={openMonthlyDashboard}
-        />
+        <>
+          <MobileSimpleDashboard
+            summary={summary}
+            selectedMonth={selectedMonth}
+            notifications={financialNotifications}
+            topExpenses={topExpenses}
+            recentTransactions={[...monthTransactions].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 4)}
+            cardUsage={cardUsage}
+            goals={goals}
+            onAction={handleMobileQuickAction}
+            setPage={setPage}
+            onOpenTransactions={openTransactionsWithFilters}
+          />
+          <div className="desktop-dashboard-content">
+            <DashboardOverview
+              summary={summary}
+              expenseByCategory={expenseByCategory}
+              dailyFlow={dailyFlow}
+              monthlyComparison={monthlyComparison}
+              topExpenses={topExpenses}
+              goals={goals}
+              selectedMonth={selectedMonth}
+              setPage={setPage}
+              insights={smartInsights}
+              notifications={financialNotifications}
+              cardUsage={cardUsage}
+              healthStatus={financialHealth}
+              onOpenTransactions={openTransactionsWithFilters}
+              onSelectMonth={openMonthlyDashboard}
+            />
+          </div>
+        </>
       )}
 
       {page === "transactions" && (
@@ -5296,7 +5694,7 @@ function Dashboard({ darkMode, setDarkMode, accentColor, setAccentColor, density
 
       {page === "limits" && <LimitsPage limitForm={limitForm} setLimitForm={setLimitForm} categoryUsage={categoryUsage} onSubmit={handleLimitSubmit} onDelete={deleteLimit} expenseByCategory={expenseByCategory} />}
 
-      {page === "cards" && <CardsPage cardForm={cardForm} setCardForm={setCardForm} onSubmit={handleCardSubmit} onEdit={editCard} onDelete={deleteCard} cardUsage={cardUsage} transactions={transactions} cardAdjustments={cardAdjustments} selectedMonth={selectedMonth} onCardAdjustment={handleCardAdjustment} onDeleteCardAdjustment={deleteCardAdjustment} onInstallmentPurchase={handleCardInstallmentPurchaseSubmit} onEditTransaction={handleEditTransaction} onDeleteTransaction={handleDeleteTransaction} onDuplicateTransaction={handleDuplicateTransaction} onViewTransaction={setSelectedTransaction} creditCards={creditCards} />}
+      {page === "cards" && <CardsPage cardForm={cardForm} setCardForm={setCardForm} onSubmit={handleCardSubmit} onEdit={editCard} onDelete={deleteCard} cardUsage={cardUsage} transactions={transactions} cardAdjustments={cardAdjustments} invoiceInstallments={invoiceInstallments} invoiceInstallmentPayments={invoiceInstallmentPayments} selectedMonth={selectedMonth} onCardAdjustment={handleCardAdjustment} onDeleteCardAdjustment={deleteCardAdjustment} onInstallmentPurchase={handleCardInstallmentPurchaseSubmit} onInvoiceInstallmentPlan={handleInvoiceInstallmentPlanSubmit} onInvoiceInstallmentPayment={handleInvoiceInstallmentPaymentSubmit} onCancelInvoiceInstallmentPlan={cancelInvoiceInstallmentPlan} onEditTransaction={handleEditTransaction} onDeleteTransaction={handleDeleteTransaction} onDuplicateTransaction={handleDuplicateTransaction} onViewTransaction={setSelectedTransaction} creditCards={creditCards} />}
 
       {page === "recurring" && (
         <RecurringPage
@@ -6032,6 +6430,126 @@ function SummaryLine({ label, value, strong = false }) {
   );
 }
 
+
+function MobileSimpleHeader({ userName, currentTab, selectedMonth, onChangeMonth, years, onAccount }) {
+  return (
+    <header className="pwa-simple-header" aria-label="Topo simplificado do PWA">
+      <div className="pwa-simple-header-row">
+        <div className="min-w-0">
+          <span className="pwa-simple-hello">Olá, {userName}</span>
+          <strong>{currentTab?.label || "Painel"}</strong>
+        </div>
+        <button type="button" onClick={onAccount} className="pwa-simple-account" aria-label="Abrir conta">
+          <UserRound size={18} />
+        </button>
+      </div>
+      <MonthSelector value={selectedMonth} onChange={onChangeMonth} years={years} />
+    </header>
+  );
+}
+
+function MobileSimpleDashboard({ summary, selectedMonth, notifications = [], topExpenses = [], recentTransactions = [], cardUsage = [], goals = [], onAction, setPage, onOpenTransactions }) {
+  const mainAlert = notifications[0];
+  const topExpense = topExpenses[0];
+  const cardFocus = [...cardUsage].sort((a, b) => Number(b.percent || 0) - Number(a.percent || 0))[0];
+  const goalFocus = goals[0];
+
+  return (
+    <main className="pwa-simple-dashboard" aria-label="Painel simplificado do PWA">
+      <section className={classNames("pwa-simple-balance", summary.balance < 0 && "pwa-simple-balance-negative")}> 
+        <span>{safeMonthLabel(selectedMonth)}</span>
+        <h2>{money.format(summary.balance)}</h2>
+        <p>{summary.balance >= 0 ? "Saldo disponível no mês" : "Saldo negativo no mês"}</p>
+        <div className="pwa-simple-balance-grid">
+          <button type="button" onClick={() => onOpenTransactions?.({ types: ["income"] })}>
+            <span>Receitas</span>
+            <strong>{money.format(summary.income)}</strong>
+          </button>
+          <button type="button" onClick={() => onOpenTransactions?.({ types: ["expense"] })}>
+            <span>Despesas</span>
+            <strong>{money.format(summary.expense)}</strong>
+          </button>
+        </div>
+      </section>
+
+      <section className="pwa-simple-card">
+        <div className="pwa-simple-section-title">
+          <h3>Ações principais</h3>
+          <span>Use em poucos toques</span>
+        </div>
+        <div className="pwa-simple-actions-grid">
+          <button type="button" onClick={() => onAction?.("expense")} className="pwa-simple-action pwa-simple-action-expense">
+            <ArrowDownCircle size={20} />
+            <span>Despesa</span>
+          </button>
+          <button type="button" onClick={() => onAction?.("income")} className="pwa-simple-action pwa-simple-action-income">
+            <ArrowUpCircle size={20} />
+            <span>Receita</span>
+          </button>
+          <button type="button" onClick={() => onAction?.("payment")} className="pwa-simple-action">
+            <CheckCircle2 size={20} />
+            <span>Pagar</span>
+          </button>
+          <button type="button" onClick={() => setPage?.("cards")} className="pwa-simple-action">
+            <CreditCard size={20} />
+            <span>Cartões</span>
+          </button>
+        </div>
+      </section>
+
+      <section className="pwa-simple-card">
+        <div className="pwa-simple-section-title">
+          <h3>Resumo rápido</h3>
+          <span>Sem gráficos no PWA</span>
+        </div>
+        <div className="pwa-simple-info-list">
+          <button type="button" onClick={() => topExpense ? onOpenTransactions?.({ categories: [topExpense.name], types: ["expense"] }) : onAction?.("expense")}>
+            <div><strong>Maior gasto</strong><span>{topExpense?.name || "Cadastre uma despesa"}</span></div>
+            <b>{topExpense ? money.format(topExpense.value) : "—"}</b>
+          </button>
+          <button type="button" onClick={() => setPage?.("cards")}>
+            <div><strong>Cartão em foco</strong><span>{cardFocus?.name || "Nenhum cartão cadastrado"}</span></div>
+            <b>{cardFocus ? money.format(cardFocus.spent || 0) : "—"}</b>
+          </button>
+          <button type="button" onClick={() => setPage?.("goals")}>
+            <div><strong>Meta</strong><span>{goalFocus?.title || "Nenhuma meta ativa"}</span></div>
+            <b>{goalFocus ? `${Math.min(100, Math.round((Number(goalFocus.current_amount || 0) / Math.max(1, Number(goalFocus.target_amount || 1))) * 100))}%` : "—"}</b>
+          </button>
+        </div>
+      </section>
+
+      {mainAlert && (
+        <section className="pwa-simple-alert" role="status">
+          <div>
+            <strong>{mainAlert.title}</strong>
+            <p>{mainAlert.text}</p>
+          </div>
+        </section>
+      )}
+
+      <section className="pwa-simple-card">
+        <div className="pwa-simple-section-title">
+          <h3>Últimos lançamentos</h3>
+          <button type="button" onClick={() => setPage?.("transactions")}>Ver todos</button>
+        </div>
+        <div className="pwa-simple-transactions">
+          {recentTransactions.length ? recentTransactions.map((item) => (
+            <button key={item.id} type="button" onClick={() => onOpenTransactions?.({ search: item.description })}>
+              <div>
+                <strong>{item.description}</strong>
+                <span>{formatDateBR(item.date)} · {item.category}</span>
+              </div>
+              <b className={item.type === "income" ? "text-emerald-400" : "text-rose-400"}>{item.type === "income" ? "+" : "-"}{money.format(item.amount)}</b>
+            </button>
+          )) : (
+            <div className="pwa-simple-empty">Nenhum lançamento neste mês.</div>
+          )}
+        </div>
+      </section>
+    </main>
+  );
+}
+
 function MobileQuickShortcuts({ onExpense, onIncome, onPayment, onCards }) {
   return (
     <section className="mobile-quick-shortcuts" aria-label="Atalhos rápidos">
@@ -6147,9 +6665,10 @@ function MobileQuickActionFab({ open, setOpen, onAction, page = "dashboard" }) {
 }
 
 function MobileBottomNav({ tabs, page, setPage, moreOpen = false, setMoreOpen = () => {} }) {
-  const mainKeys = ["dashboard", "transactions", "cards", "payments"];
+  const mainKeys = ["dashboard", "transactions", "payments", "cards"];
+  const moreKeys = ["recurring", "goals", "account"];
   const mainTabs = tabs.filter((tab) => mainKeys.includes(tab.key));
-  const moreTabs = tabs.filter((tab) => !mainKeys.includes(tab.key));
+  const moreTabs = tabs.filter((tab) => moreKeys.includes(tab.key));
   const isMoreActive = moreTabs.some((tab) => tab.key === page);
 
   function openPage(key) {
@@ -6164,7 +6683,7 @@ function MobileBottomNav({ tabs, page, setPage, moreOpen = false, setMoreOpen = 
       {moreOpen && (
         <div className="mobile-more-sheet" role="dialog" aria-label="Mais opções do menu">
           <div className="mb-3 flex items-center justify-between gap-3">
-            <strong className="text-sm font-black">Mais áreas</strong>
+            <strong className="text-sm font-black">Outras opções</strong>
             <button type="button" onClick={() => setMoreOpen(false)} className="ghost-button rounded-xl p-2" aria-label="Fechar menu">
               <X size={16} />
             </button>
@@ -9605,11 +10124,12 @@ function CardsUsageMini({ cardUsage, setPage }) {
   );
 }
 
-function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsage, transactions, cardAdjustments, selectedMonth, onCardAdjustment, onDeleteCardAdjustment, onInstallmentPurchase, onEditTransaction, onDeleteTransaction, onDuplicateTransaction, onViewTransaction, creditCards = [] }) {
+function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsage, transactions, cardAdjustments, invoiceInstallments = [], invoiceInstallmentPayments = [], selectedMonth, onCardAdjustment, onDeleteCardAdjustment, onInstallmentPurchase, onInvoiceInstallmentPlan, onInvoiceInstallmentPayment, onCancelInvoiceInstallmentPlan, onEditTransaction, onDeleteTransaction, onDuplicateTransaction, onViewTransaction, creditCards = [] }) {
   const [selectedCardId, setSelectedCardId] = useState(cardUsage[0]?.id || "");
   const [adjustmentAmount, setAdjustmentAmount] = useState("");
   const [adjustmentNotes, setAdjustmentNotes] = useState("");
   const [showInstallmentForm, setShowInstallmentForm] = useState(false);
+  const [showInvoiceInstallmentForm, setShowInvoiceInstallmentForm] = useState(false);
   const [showNewCardForm, setShowNewCardForm] = useState(cardUsage.length === 0);
   const emptyInstallmentForm = {
     description: "",
@@ -9620,6 +10140,16 @@ function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsag
     notes: "",
   };
   const [installmentForm, setInstallmentForm] = useState(emptyInstallmentForm);
+  const emptyInvoiceInstallmentForm = {
+    source_type: "current_month",
+    reference_month: selectedMonth,
+    total_amount: "",
+    entry_amount: "",
+    installments: "2",
+    first_due_date: todayISODate(),
+    notes: "",
+  };
+  const [invoiceInstallmentForm, setInvoiceInstallmentForm] = useState(emptyInvoiceInstallmentForm);
 
   useEffect(() => {
     if (!selectedCardId && cardUsage[0]?.id) setSelectedCardId(cardUsage[0].id);
@@ -9638,6 +10168,12 @@ function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsag
   const selectedCardAdjustments = selectedCard ? cardAdjustments.filter((item) => item.card_id === selectedCard.id && item.date <= monthEnd) : [];
   const selectedInstallmentGroups = selectedCard ? buildInstallmentGroups(selectedCardTransactions, selectedMonth) : [];
   const futureInstallmentsAmount = selectedInstallmentGroups.reduce((total, group) => total + Number(group.remainingAmount || 0), 0);
+  const selectedInvoiceInstallments = selectedCard ? invoiceInstallments.filter((plan) => plan.card_id === selectedCard.id) : [];
+  const selectedInvoiceInstallmentIds = new Set(selectedInvoiceInstallments.map((plan) => plan.id));
+  const selectedInvoiceInstallmentPayments = invoiceInstallmentPayments.filter((payment) => selectedInvoiceInstallmentIds.has(payment.invoice_installment_id));
+  const activeInvoiceInstallmentAmount = selectedInvoiceInstallments
+    .filter((plan) => plan.status !== "cancelled")
+    .reduce((sum, plan) => sum + buildInvoiceInstallmentSummary(plan, selectedInvoiceInstallmentPayments).openAmount, 0);
   const hasCreditSelected = selectedCard && isCreditLikeCardType(selectedCard.card_type);
 
   function submitAdjustment(adjustmentType, fixedAmount) {
@@ -9657,6 +10193,32 @@ function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsag
     if (success) {
       setInstallmentForm(emptyInstallmentForm);
       setShowInstallmentForm(false);
+    }
+  }
+
+  async function submitInvoiceInstallmentPlan(event) {
+    event.preventDefault();
+
+    const selectedMonthAmount = selectedCardTransactions
+      .filter((item) => item.date?.slice(0, 7) === selectedMonth)
+      .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    const calculatedTotal =
+      invoiceInstallmentForm.source_type === "current_month"
+        ? selectedMonthAmount
+        : invoiceInstallmentForm.source_type === "open_total"
+          ? selectedCard?.spent || 0
+          : toNumber(invoiceInstallmentForm.total_amount);
+
+    const success = await onInvoiceInstallmentPlan?.({
+      ...invoiceInstallmentForm,
+      card_id: selectedCard?.id,
+      reference_month: selectedMonth,
+      total_amount: calculatedTotal,
+    });
+
+    if (success) {
+      setInvoiceInstallmentForm({ ...emptyInvoiceInstallmentForm, reference_month: selectedMonth });
+      setShowInvoiceInstallmentForm(false);
     }
   }
 
@@ -9756,7 +10318,7 @@ function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsag
                 <div className="grid gap-3 sm:grid-cols-3 xl:min-w-[520px]">
                   <MiniInfo label={selectedCard.stored_value_card ? "Disponível" : "Em aberto"} value={money.format(selectedCard.stored_value_card ? selectedCard.available : selectedCard.spent)} />
                   <MiniInfo label={selectedCard.stored_value_card ? "Base + recargas" : "Limite"} value={money.format(selectedCard.total_available_base || selectedCard.card_limit)} />
-                  <MiniInfo label="Parceladas" value={`${selectedInstallmentGroups.length} compra(s)`} />
+                  <MiniInfo label="Faturas parceladas" value={activeInvoiceInstallmentAmount > 0 ? money.format(activeInvoiceInstallmentAmount) : `${selectedInvoiceInstallments.length} plano(s)`} />
                 </div>
               </div>
 
@@ -9769,6 +10331,15 @@ function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsag
                   title={!hasCreditSelected ? "Disponível apenas para cartões de crédito" : "Nova compra parcelada"}
                 >
                   <Plus size={17} /> {showInstallmentForm ? "Ocultar parcelamento" : "Nova compra parcelada"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowInvoiceInstallmentForm((value) => !value)}
+                  disabled={!hasCreditSelected}
+                  className="outline-button inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-3 text-sm font-black disabled:cursor-not-allowed disabled:opacity-50"
+                  title={!hasCreditSelected ? "Disponível apenas para cartões de crédito" : "Parcelar fatura"}
+                >
+                  <Repeat size={17} /> {showInvoiceInstallmentForm ? "Ocultar fatura" : "Parcelar fatura"}
                 </button>
                 <button
                   type="button"
@@ -9790,11 +10361,26 @@ function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsag
               />
             )}
 
+            {showInvoiceInstallmentForm && (
+              <InvoiceInstallmentPlanBox
+                card={selectedCard}
+                selectedMonth={selectedMonth}
+                currentMonthAmount={selectedCardTransactions.filter((item) => item.date?.slice(0, 7) === selectedMonth).reduce((sum, item) => sum + Number(item.amount || 0), 0)}
+                openAmount={selectedCard.spent}
+                form={invoiceInstallmentForm}
+                setForm={setInvoiceInstallmentForm}
+                onSubmit={submitInvoiceInstallmentPlan}
+                onClose={() => setShowInvoiceInstallmentForm(false)}
+              />
+            )}
+
             <CreditCardInvoicePanel
               card={selectedCard}
               transactions={invoiceTransactions}
               allTransactions={selectedCardTransactions}
               adjustments={selectedCardAdjustments}
+              invoiceInstallments={selectedInvoiceInstallments}
+              invoiceInstallmentPayments={selectedInvoiceInstallmentPayments}
               selectedMonth={selectedMonth}
               adjustmentAmount={adjustmentAmount}
               setAdjustmentAmount={setAdjustmentAmount}
@@ -9802,6 +10388,8 @@ function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsag
               setAdjustmentNotes={setAdjustmentNotes}
               onAdjustment={submitAdjustment}
               onDeleteAdjustment={onDeleteCardAdjustment}
+              onInvoiceInstallmentPayment={onInvoiceInstallmentPayment}
+              onCancelInvoiceInstallmentPlan={onCancelInvoiceInstallmentPlan}
               onEditTransaction={onEditTransaction}
               onDeleteTransaction={onDeleteTransaction}
               onDuplicateTransaction={onDuplicateTransaction}
@@ -9988,11 +10576,217 @@ function CardInstallmentPurchaseBox({ card, form, setForm, onSubmit, onClose }) 
   );
 }
 
+function InvoiceInstallmentPlanBox({ card, selectedMonth, currentMonthAmount, openAmount, form, setForm, onSubmit, onClose }) {
+  const isCreditCard = card && isCreditLikeCardType(card.card_type);
+  const sourceAmount =
+    form.source_type === "current_month"
+      ? Number(currentMonthAmount || 0)
+      : form.source_type === "open_total"
+        ? Number(openAmount || 0)
+        : toNumber(form.total_amount);
+  const totalAmount = roundMoneyValue(sourceAmount);
+  const entryAmount = Math.min(totalAmount, Math.max(0, roundMoneyValue(toNumber(form.entry_amount))));
+  const financedAmount = Math.max(0, roundMoneyValue(totalAmount - entryAmount));
+  const installments = clampInvoiceInstallments(form.installments);
+  const monthlyAmount = installments > 0 ? roundMoneyValue(financedAmount / installments) : 0;
+  const firstDueDate = form.first_due_date || todayISODate();
+  const lastDueDate = firstDueDate ? addMonthsToISO(firstDueDate, installments - 1) : "";
+
+  function update(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  return (
+    <section className="surface-card rounded-[2rem] p-5 shadow-sm">
+      <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <h2 className="text-xl font-black">Parcelar fatura</h2>
+            <InfoPopover title="Parcelamento de fatura" text="Cria um compromisso mensal da fatura sem lançar uma nova despesa. A entrada e as parcelas pagas entram como pagamento do cartão para não duplicar gastos." />
+          </div>
+          <p className="muted-text text-sm">Simule entrada, quantidade de parcelas e valor mensal antes de confirmar.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {card && <span className="rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-black text-emerald-400">{card.name}</span>}
+          {onClose && (
+            <button type="button" onClick={onClose} className="icon-button rounded-xl p-2" title="Fechar parcelamento de fatura">
+              <X size={17} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {!card && <EmptyState title="Selecione um cartão" text="Escolha um cartão de crédito para parcelar uma fatura." />}
+
+      {card && !isCreditCard && (
+        <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4 text-sm font-bold text-amber-400">
+          Parcelamento de fatura está disponível apenas para cartões de crédito. Este cartão está marcado como {formatCardType(card.card_type)}.
+        </div>
+      )}
+
+      {card && isCreditCard && (
+        <form onSubmit={onSubmit} className="grid gap-4">
+          <div className="grid gap-3 md:grid-cols-3">
+            <Field label="O que será parcelado">
+              <select value={form.source_type} onChange={(event) => update("source_type", event.target.value)} className="input">
+                <option value="current_month">Fatura do mês atual</option>
+                <option value="open_total">Valor completo em aberto</option>
+                <option value="manual">Informar valor manual</option>
+              </select>
+            </Field>
+            <Field label="Valor total da fatura">
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.source_type === "manual" ? form.total_amount : totalAmount || ""}
+                onChange={(event) => update("total_amount", event.target.value)}
+                className="input"
+                placeholder="0,00"
+                disabled={form.source_type !== "manual"}
+              />
+            </Field>
+            <Field label="Data da 1ª parcela">
+              <input type="date" value={form.first_due_date} onChange={(event) => update("first_due_date", event.target.value)} className="input" />
+            </Field>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-3">
+            <Field label="Valor da entrada">
+              <input type="number" min="0" step="0.01" value={form.entry_amount} onChange={(event) => update("entry_amount", event.target.value)} className="input" placeholder="0,00" />
+            </Field>
+            <Field label="Quantidade de parcelas">
+              <input type="number" min="1" max="60" value={form.installments} onChange={(event) => update("installments", event.target.value)} className="input" placeholder="2" />
+            </Field>
+            <Field label="Valor pago por mês">
+              <input value={monthlyAmount > 0 ? money.format(monthlyAmount) : ""} className="input" disabled placeholder="Calculado automático" />
+            </Field>
+          </div>
+
+          <Field label="Observação">
+            <input value={form.notes} onChange={(event) => update("notes", event.target.value)} className="input" placeholder="Opcional. Ex.: acordo banco, taxa já inclusa, melhor dia para pagar" />
+          </Field>
+
+          <div className="grid gap-3 rounded-[1.5rem] border border-violet-500/20 bg-violet-500/5 p-4 text-sm md:grid-cols-5">
+            <MiniInfo label="Valor total" value={money.format(totalAmount || 0)} />
+            <MiniInfo label="Entrada" value={money.format(entryAmount || 0)} />
+            <MiniInfo label="Valor parcelado" value={money.format(financedAmount || 0)} />
+            <MiniInfo label="Parcelamento" value={financedAmount > 0 ? `${installments}x de ${money.format(monthlyAmount)}` : "Informe os valores"} />
+            <MiniInfo label="Última parcela" value={lastDueDate ? formatDateBR(lastDueDate) : "-"} />
+          </div>
+
+          <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4 text-xs font-bold leading-6 text-amber-400">
+            Este registro não cria uma nova despesa. Ele controla o acordo da fatura e registra entrada/parcelas como pagamento do cartão, evitando duplicidade nos relatórios.
+          </div>
+
+          <button className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-violet-600 px-4 py-3 font-black text-white transition hover:bg-violet-700">
+            <Repeat size={18} /> Criar parcelamento de fatura
+          </button>
+        </form>
+      )}
+    </section>
+  );
+}
+
+function InvoiceInstallmentPlanCard({ plan, payments, onPayment, onCancel }) {
+  const [extraAmount, setExtraAmount] = useState("");
+  const summary = buildInvoiceInstallmentSummary(plan, payments);
+  const isInactive = plan.status === "cancelled" || summary.isConcluded;
+
+  async function payExtra() {
+    const success = await onPayment?.({ planId: plan.id, paymentType: "extra", amount: extraAmount });
+    if (success) setExtraAmount("");
+  }
+
+  return (
+    <article className="transaction-row rounded-2xl p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="rounded-full bg-violet-500/10 px-3 py-1 text-xs font-black text-violet-400">{getInvoicePlanSourceLabel(plan.source_type)}</span>
+            <span className={classNames("rounded-full px-3 py-1 text-xs font-black", summary.statusLabel === "Atrasado" ? "bg-rose-500/10 text-rose-400" : summary.statusLabel === "Concluído" ? "bg-emerald-500/10 text-emerald-400" : summary.statusLabel === "Cancelado" ? "bg-slate-500/10 text-slate-400" : "bg-blue-500/10 text-blue-400")}>{summary.statusLabel}</span>
+          </div>
+          <h4 className="font-black">Parcelamento da fatura · {safeMonthLabel(plan.reference_month)}</h4>
+          <p className="muted-text mt-1 text-sm">
+            Entrada {money.format(plan.entry_amount)} · {summary.installments}x de {money.format(summary.monthlyAmount)} · {formatDateBR(plan.first_due_date)} até {formatDateBR(summary.lastDueDate)}
+          </p>
+          {plan.notes && <p className="muted-text mt-1 text-xs font-semibold">{plan.notes}</p>}
+        </div>
+        <div className="text-left lg:text-right">
+          <strong className="block text-violet-400">{money.format(summary.openAmount)} em aberto</strong>
+          <span className="muted-text text-xs font-semibold">{summary.paidInstallments}/{summary.installments} parcelas pagas</span>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <ProgressBar value={summary.progress} max={100} danger={summary.isLate} />
+      </div>
+
+      <div className="mt-4 grid gap-3 text-sm md:grid-cols-5">
+        <div><span className="muted-text block">Total</span><strong>{money.format(summary.totalAmount)}</strong></div>
+        <div><span className="muted-text block">Pago</span><strong>{money.format(summary.paidAmount)}</strong></div>
+        <div><span className="muted-text block">Restante</span><strong>{money.format(summary.openAmount)}</strong></div>
+        <div><span className="muted-text block">Próxima</span><strong>{summary.nextDueDate ? formatDateBR(summary.nextDueDate) : "-"}</strong></div>
+        <div><span className="muted-text block">Parcela</span><strong>{summary.nextInstallmentNumber ? `${summary.nextInstallmentNumber}/${summary.installments}` : "Finalizado"}</strong></div>
+      </div>
+
+      {!isInactive && (
+        <div className="mt-4 grid gap-3 lg:grid-cols-[auto_auto_1fr_auto_auto] lg:items-center">
+          <button
+            type="button"
+            onClick={() => onPayment?.({ planId: plan.id, paymentType: "installment", installmentNumber: summary.nextInstallmentNumber })}
+            className="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-black text-white transition hover:bg-emerald-700"
+            disabled={!summary.nextInstallmentNumber}
+          >
+            Pagar próxima
+          </button>
+          <button
+            type="button"
+            onClick={() => onPayment?.({ planId: plan.id, paymentType: "settlement", amount: summary.openAmount })}
+            className="outline-button rounded-2xl px-4 py-2 text-sm font-black"
+          >
+            Quitar
+          </button>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={extraAmount}
+            onChange={(event) => setExtraAmount(event.target.value)}
+            className="input"
+            placeholder="Valor extra para abater"
+          />
+          <button type="button" onClick={payExtra} className="outline-button rounded-2xl px-4 py-2 text-sm font-black">Abater extra</button>
+          <button type="button" onClick={() => onCancel?.(plan.id)} className="rounded-2xl bg-rose-500/10 px-4 py-2 text-sm font-black text-rose-400">Cancelar</button>
+        </div>
+      )}
+
+      {summary.relatedPayments.length > 0 && (
+        <details className="mt-4 rounded-2xl border border-white/10 p-3">
+          <summary className="cursor-pointer text-sm font-black">Histórico do parcelamento</summary>
+          <div className="mt-3 space-y-2">
+            {summary.relatedPayments.map((payment) => (
+              <div key={payment.id} className="flex items-center justify-between gap-3 rounded-xl bg-black/5 px-3 py-2 text-sm dark:bg-white/5">
+                <span className="muted-text font-semibold">
+                  {payment.payment_type === "entry" ? "Entrada" : payment.payment_type === "settlement" ? "Quitação" : payment.payment_type === "extra" ? "Abatimento extra" : `Parcela ${payment.installment_number || ""}`} · {formatDateBR(payment.payment_date)}
+                </span>
+                <strong>{money.format(payment.amount)}</strong>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </article>
+  );
+}
+
 function CreditCardInvoicePanel({
   card,
   transactions,
   allTransactions = transactions,
   adjustments,
+  invoiceInstallments = [],
+  invoiceInstallmentPayments = [],
   selectedMonth,
   adjustmentAmount,
   setAdjustmentAmount,
@@ -10000,6 +10794,8 @@ function CreditCardInvoicePanel({
   setAdjustmentNotes,
   onAdjustment,
   onDeleteAdjustment,
+  onInvoiceInstallmentPayment,
+  onCancelInvoiceInstallmentPlan,
   onEditTransaction,
   onDeleteTransaction,
   onDuplicateTransaction,
@@ -10010,6 +10806,12 @@ function CreditCardInvoicePanel({
 
   const totalTransactions = transactions.reduce((sum, item) => sum + Number(item.amount || 0), 0);
   const installmentGroups = buildInstallmentGroups(allTransactions, selectedMonth);
+  const invoicePlanSummaries = invoiceInstallments
+    .map((plan) => ({ plan, summary: buildInvoiceInstallmentSummary(plan, invoiceInstallmentPayments) }))
+    .sort((a, b) => (a.plan.status === "active" ? -1 : 1) - (b.plan.status === "active" ? -1 : 1) || (b.plan.created_at || "").localeCompare(a.plan.created_at || ""));
+  const activeInvoiceOpenAmount = invoicePlanSummaries
+    .filter((item) => item.plan.status !== "cancelled" && !item.summary.isConcluded)
+    .reduce((sum, item) => sum + item.summary.openAmount, 0);
   const paymentLabel = card.stored_value_card ? "Adicionar saldo/recarga" : "Registrar pagamento";
   const quickActionLabel = card.stored_value_card ? "Adicionar saldo atual" : "Pagar valor em aberto";
   const quickActionType = card.stored_value_card ? "credit" : "payment";
@@ -10036,6 +10838,31 @@ function CreditCardInvoicePanel({
         <MiniInfo label="Disponível" value={money.format(card.available)} />
         <MiniInfo label="Vencimento" value={card.due_day ? `Dia ${card.due_day}` : "Sem vencimento"} />
       </div>
+
+      {invoicePlanSummaries.length > 0 && (
+        <div className="mb-5 rounded-[1.5rem] border border-violet-500/20 bg-violet-500/5 p-4">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="font-black">Parcelamentos de fatura</h3>
+              <p className="muted-text text-xs font-semibold">Entrada, parcelas mensais, abatimentos e quitação antecipada.</p>
+            </div>
+            <span className="rounded-full bg-violet-500/10 px-3 py-1 text-xs font-black text-violet-400">
+              {activeInvoiceOpenAmount > 0 ? `${money.format(activeInvoiceOpenAmount)} em aberto` : `${invoicePlanSummaries.length} plano(s)`}
+            </span>
+          </div>
+          <div className="mt-4 grid gap-3">
+            {invoicePlanSummaries.map(({ plan }) => (
+              <InvoiceInstallmentPlanCard
+                key={plan.id}
+                plan={plan}
+                payments={invoiceInstallmentPayments}
+                onPayment={onInvoiceInstallmentPayment}
+                onCancel={onCancelInvoiceInstallmentPlan}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="mb-5 rounded-[1.5rem] border border-emerald-500/20 bg-emerald-500/5 p-4">
         <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -13473,6 +14300,695 @@ function GlobalStyles() {
           max-width: 3.2rem !important;
         }
       }
+
+      /* ===== Modelo Bento Bank — alternativa sem sidebar ===== */
+      .home-cinematic {
+        max-width: min(1500px, calc(100vw - 1.5rem)) !important;
+      }
+      .home-cinematic .home-header {
+        border-radius: 999px !important;
+        padding: 0.72rem 1rem !important;
+        background: color-mix(in srgb, var(--surface) 78%, transparent) !important;
+        border-color: color-mix(in srgb, var(--accent-500) 22%, var(--border)) !important;
+      }
+      .home-cinematic .home-hero {
+        min-height: 620px;
+        display: grid;
+        align-items: center;
+        border-radius: 3rem !important;
+        padding: clamp(1.35rem, 3vw, 3.75rem) !important;
+        background:
+          radial-gradient(circle at 18% 18%, color-mix(in srgb, var(--accent-500) 28%, transparent), transparent 34%),
+          radial-gradient(circle at 80% 12%, rgba(59, 130, 246, 0.22), transparent 36%),
+          linear-gradient(135deg, color-mix(in srgb, var(--surface) 92%, #0f172a 8%), color-mix(in srgb, var(--surface-2) 88%, var(--accent-500) 12%)) !important;
+        border: 1px solid color-mix(in srgb, var(--accent-500) 24%, var(--border)) !important;
+      }
+      .theme-dark .home-cinematic .home-hero {
+        background:
+          radial-gradient(circle at 18% 18%, color-mix(in srgb, var(--accent-500) 30%, transparent), transparent 34%),
+          radial-gradient(circle at 82% 12%, rgba(96, 165, 250, 0.18), transparent 36%),
+          linear-gradient(135deg, #020617 0%, #0f172a 52%, color-mix(in srgb, #020617 82%, var(--accent-500) 18%) 100%) !important;
+      }
+      .home-cinematic .home-eyebrow {
+        background: color-mix(in srgb, var(--accent-500) 16%, transparent) !important;
+        border: 1px solid color-mix(in srgb, var(--accent-500) 28%, transparent);
+        color: var(--accent-400) !important;
+      }
+      .home-cinematic .home-mini-card,
+      .home-cinematic .home-stat-card,
+      .home-cinematic .home-feature-card,
+      .home-cinematic .field-shell {
+        border-radius: 1.65rem !important;
+        border: 1px solid color-mix(in srgb, var(--accent-500) 16%, var(--border)) !important;
+        background: color-mix(in srgb, var(--surface) 84%, transparent) !important;
+        backdrop-filter: blur(18px);
+      }
+      .home-cinematic .home-preview-plus {
+        transform: rotate(1deg);
+        border-radius: 2.5rem !important;
+        background: linear-gradient(135deg, color-mix(in srgb, var(--accent-500) 22%, transparent), rgba(59, 130, 246, 0.12)) !important;
+      }
+      .home-cinematic .preview-panel {
+        transform: rotate(-1deg);
+        background: #020617 !important;
+        color: #f8fafc !important;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+
+      .finance-bento-shell {
+        position: relative;
+        max-width: min(1440px, calc(100vw - 1.25rem)) !important;
+      }
+      .finance-bento-shell::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 0;
+        background:
+          radial-gradient(circle at 8% 16%, color-mix(in srgb, var(--accent-500) 13%, transparent), transparent 25%),
+          radial-gradient(circle at 92% 10%, rgba(59, 130, 246, 0.12), transparent 25%),
+          radial-gradient(circle at 48% 100%, rgba(168, 85, 247, 0.1), transparent 32%);
+      }
+      .finance-bento-shell > * {
+        position: relative;
+        z-index: 1;
+      }
+      .finance-bento-shell .dashboard-unified-topbar {
+        position: sticky;
+        top: 1rem;
+        z-index: 55;
+        border-radius: 999px !important;
+        padding: 0.62rem 0.72rem !important;
+        min-height: 3.75rem !important;
+        background: color-mix(in srgb, var(--surface) 82%, transparent) !important;
+        border: 1px solid color-mix(in srgb, var(--accent-500) 18%, var(--border)) !important;
+        box-shadow: 0 22px 60px rgba(2, 6, 23, 0.12) !important;
+        backdrop-filter: blur(22px) saturate(1.35);
+      }
+      .theme-dark .finance-bento-shell .dashboard-unified-topbar {
+        background: rgba(2, 6, 23, 0.78) !important;
+        border-color: rgba(255, 255, 255, 0.09) !important;
+      }
+      .finance-bento-shell .dashboard-unified-logo {
+        border-radius: 999px !important;
+        height: 2.35rem !important;
+        width: 2.35rem !important;
+      }
+      .finance-bento-shell .dashboard-unified-title {
+        font-size: 0.98rem !important;
+      }
+      .finance-bento-shell .dashboard-unified-nav {
+        gap: 0.35rem !important;
+        background: color-mix(in srgb, var(--surface-2) 80%, transparent);
+        border: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+        border-radius: 999px;
+        padding: 0.25rem;
+      }
+      .finance-bento-shell .dashboard-unified-tab,
+      .finance-bento-shell .account-menu-button,
+      .finance-bento-shell .month-selector {
+        border-radius: 999px !important;
+      }
+      .finance-bento-shell .dashboard-tab-active {
+        background: var(--accent-500) !important;
+        color: white !important;
+        box-shadow: 0 14px 30px color-mix(in srgb, var(--accent-500) 26%, transparent) !important;
+      }
+
+      .finance-bento-hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1.1fr) minmax(380px, 0.9fr);
+        gap: 1rem;
+        align-items: stretch;
+        padding: clamp(1rem, 2vw, 1.35rem);
+        border-radius: 2.35rem;
+        border: 1px solid color-mix(in srgb, var(--accent-500) 18%, var(--border));
+        background:
+          linear-gradient(135deg, color-mix(in srgb, var(--surface) 86%, var(--accent-500) 14%), color-mix(in srgb, var(--surface-2) 90%, #2563eb 10%));
+        box-shadow: 0 24px 60px rgba(15, 23, 42, 0.09);
+        overflow: hidden;
+      }
+      .theme-dark .finance-bento-hero {
+        background:
+          radial-gradient(circle at top left, color-mix(in srgb, var(--accent-500) 22%, transparent), transparent 36%),
+          linear-gradient(135deg, rgba(15, 23, 42, 0.98), rgba(2, 6, 23, 0.98));
+        box-shadow: 0 28px 70px rgba(0, 0, 0, 0.28);
+      }
+      .finance-bento-copy {
+        border-radius: 1.75rem;
+        padding: clamp(1.1rem, 2.5vw, 2rem);
+        background: color-mix(in srgb, var(--surface) 56%, transparent);
+        border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+      }
+      .finance-bento-eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        border-radius: 999px;
+        padding: 0.42rem 0.72rem;
+        font-size: 0.78rem;
+        font-weight: 950;
+        color: var(--accent-400);
+        background: color-mix(in srgb, var(--accent-500) 13%, transparent);
+        border: 1px solid color-mix(in srgb, var(--accent-500) 24%, transparent);
+      }
+      .finance-bento-copy h2 {
+        margin: 1rem 0 0;
+        font-size: clamp(1.7rem, 3.4vw, 3rem);
+        line-height: 1.02;
+        letter-spacing: -0.06em;
+        font-weight: 1000;
+        max-width: 760px;
+      }
+      .finance-bento-copy p {
+        margin: 0.85rem 0 0;
+        max-width: 720px;
+        color: var(--muted);
+        font-size: 0.96rem;
+        line-height: 1.75;
+        font-weight: 700;
+      }
+      .finance-bento-copy p strong { color: var(--text); }
+      .finance-bento-quick-actions {
+        margin-top: 1.1rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.65rem;
+      }
+      .finance-bento-quick-actions button {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        border: 0;
+        border-radius: 999px;
+        padding: 0.78rem 1rem;
+        background: var(--accent-500);
+        color: white;
+        font-size: 0.86rem;
+        font-weight: 950;
+        cursor: pointer;
+        box-shadow: 0 14px 30px color-mix(in srgb, var(--accent-500) 25%, transparent);
+        transition: transform 0.2s ease, filter 0.2s ease;
+      }
+      .finance-bento-quick-actions button:hover { transform: translateY(-2px); filter: brightness(1.05); }
+      .finance-bento-metrics {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: 1fr 1fr;
+        gap: 0.75rem;
+      }
+      .finance-bento-metric {
+        text-align: left;
+        border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+        border-radius: 1.75rem;
+        padding: 1rem;
+        background: color-mix(in srgb, var(--surface) 72%, transparent);
+        color: var(--text);
+        cursor: pointer;
+        min-height: 112px;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+      .finance-bento-metric:hover { transform: translateY(-3px); box-shadow: var(--shadow); }
+      .finance-bento-metric span {
+        display: block;
+        color: var(--muted);
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-weight: 950;
+      }
+      .finance-bento-metric strong {
+        display: block;
+        margin-top: 0.7rem;
+        font-size: clamp(1.1rem, 2.1vw, 1.75rem);
+        line-height: 1;
+        letter-spacing: -0.05em;
+      }
+      .finance-bento-income { border-color: rgba(16, 185, 129, 0.28); }
+      .finance-bento-expense { border-color: rgba(244, 63, 94, 0.24); }
+      .finance-bento-balance {
+        grid-column: 1 / -1;
+        background: linear-gradient(135deg, var(--accent-500), color-mix(in srgb, var(--accent-600) 70%, #2563eb 30%));
+        color: white;
+        border-color: transparent;
+      }
+      .finance-bento-balance span { color: rgba(255, 255, 255, 0.78); }
+      .finance-bento-balance strong { color: white; }
+
+      .finance-bento-shell .dashboard-clean {
+        gap: 1rem !important;
+      }
+      .finance-bento-shell .surface-card,
+      .finance-bento-shell .transaction-row,
+      .finance-bento-shell .summary-panel,
+      .finance-bento-shell .monthly-summary-card,
+      .finance-bento-shell .card-list-panel,
+      .finance-bento-shell .compact-entry-card {
+        border-radius: 1.75rem !important;
+        border-color: color-mix(in srgb, var(--accent-500) 12%, var(--border)) !important;
+        background:
+          linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, white 4%), color-mix(in srgb, var(--surface-2) 88%, var(--accent-500) 4%)) !important;
+        box-shadow: 0 18px 42px rgba(15, 23, 42, 0.07) !important;
+      }
+      .theme-dark .finance-bento-shell .surface-card,
+      .theme-dark .finance-bento-shell .transaction-row,
+      .theme-dark .finance-bento-shell .summary-panel,
+      .theme-dark .finance-bento-shell .monthly-summary-card,
+      .theme-dark .finance-bento-shell .card-list-panel,
+      .theme-dark .finance-bento-shell .compact-entry-card {
+        background:
+          linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(2, 6, 23, 0.88)) !important;
+        box-shadow: 0 18px 42px rgba(0, 0, 0, 0.24) !important;
+      }
+      .finance-bento-shell .dashboard-clean > section:first-child {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+      }
+      .finance-bento-shell .dashboard-clean > section:first-child > button > * {
+        min-height: 136px;
+      }
+      .finance-bento-shell .dashboard-clean > section:first-child > button:nth-child(3) > * {
+        background: linear-gradient(135deg, color-mix(in srgb, var(--accent-500) 22%, var(--surface)), color-mix(in srgb, #2563eb 16%, var(--surface))) !important;
+      }
+      .finance-bento-shell .input,
+      .finance-bento-shell select,
+      .finance-bento-shell textarea {
+        border-radius: 1.15rem !important;
+        background: color-mix(in srgb, var(--surface-2) 86%, transparent) !important;
+        border-color: color-mix(in srgb, var(--accent-500) 14%, var(--border)) !important;
+      }
+      .finance-bento-shell .ghost-button,
+      .finance-bento-shell .outline-button,
+      .finance-bento-shell .theme-button {
+        border-radius: 999px !important;
+      }
+      .finance-bento-shell .transactions-layout,
+      .finance-bento-shell .cards-page-layout {
+        gap: 1.15rem !important;
+      }
+      .finance-bento-shell .transaction-date-group {
+        border-left: 4px solid var(--accent-500);
+        padding-left: 0.9rem;
+      }
+      .finance-bento-shell .monthly-summary-backdrop {
+        backdrop-filter: blur(18px);
+      }
+
+      @media (max-width: 1180px) {
+        .finance-bento-hero { grid-template-columns: 1fr; }
+        .finance-bento-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: auto; }
+        .finance-bento-balance { grid-column: auto; }
+        .finance-bento-shell .dashboard-clean > section:first-child { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+      }
+      @media (max-width: 768px) {
+        .home-cinematic .home-header { border-radius: 1.5rem !important; }
+        .home-cinematic .home-hero { min-height: auto; border-radius: 2rem !important; }
+        .home-cinematic .home-preview-plus { transform: none; }
+        .home-cinematic .preview-panel { transform: none; }
+        .finance-bento-shell { max-width: 100% !important; }
+        .finance-bento-shell .dashboard-unified-topbar {
+          position: relative;
+          top: auto;
+          border-radius: 1.35rem !important;
+          min-height: unset !important;
+        }
+        .finance-bento-hero {
+          border-radius: 1.75rem;
+          padding: 0.85rem;
+        }
+        .finance-bento-copy { padding: 1rem; border-radius: 1.3rem; }
+        .finance-bento-copy h2 { font-size: 1.55rem; }
+        .finance-bento-copy p { font-size: 0.86rem; }
+        .finance-bento-quick-actions button { flex: 1 1 auto; justify-content: center; padding: 0.7rem 0.85rem; }
+        .finance-bento-metrics { grid-template-columns: 1fr; }
+        .finance-bento-shell .dashboard-clean > section:first-child { grid-template-columns: 1fr !important; }
+        .finance-bento-shell .dashboard-clean > section:first-child > button > * { min-height: auto; }
+      }
+
+
+      /* PWA simples e objetivo: reduz o painel mobile ao essencial */
+      .pwa-simple-header,
+      .pwa-simple-dashboard {
+        display: none;
+      }
+
+      @media (max-width: 768px) {
+        .finance-bento-shell {
+          gap: 0.85rem !important;
+          padding: max(0.75rem, env(safe-area-inset-top)) 0.75rem calc(6.8rem + env(safe-area-inset-bottom)) !important;
+        }
+
+        .finance-bento-shell .dashboard-unified-topbar,
+        .finance-bento-hero,
+        .desktop-dashboard-content,
+        .mobile-quick-shortcuts,
+        .mobile-fab-button,
+        .mobile-action-sheet,
+        .mobile-action-dim,
+        .finance-bento-shell > .surface-card:has(.alert-count-pill) {
+          display: none !important;
+        }
+
+        .pwa-simple-header {
+          display: grid;
+          gap: 0.75rem;
+          position: sticky;
+          top: max(0.65rem, env(safe-area-inset-top));
+          z-index: 45;
+          border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+          border-radius: 1.45rem;
+          padding: 0.8rem;
+          background: color-mix(in srgb, var(--surface) 94%, transparent);
+          box-shadow: 0 16px 38px rgba(2, 6, 23, 0.16);
+          backdrop-filter: blur(18px) saturate(1.18);
+        }
+
+        .pwa-simple-header-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.75rem;
+        }
+
+        .pwa-simple-header strong {
+          display: block;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          font-size: 1rem;
+          font-weight: 950;
+          letter-spacing: -0.03em;
+        }
+
+        .pwa-simple-hello {
+          display: block;
+          color: var(--muted);
+          font-size: 0.73rem;
+          font-weight: 900;
+          line-height: 1.1;
+        }
+
+        .pwa-simple-account {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 2.55rem;
+          height: 2.55rem;
+          border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+          border-radius: 1rem;
+          background: color-mix(in srgb, var(--surface-2) 90%, transparent);
+          color: var(--text);
+        }
+
+        .pwa-simple-header .month-selector {
+          width: 100%;
+          justify-content: space-between;
+          min-height: 2.8rem;
+          padding: 0.35rem 0.45rem !important;
+          border-radius: 1rem !important;
+          box-shadow: none !important;
+        }
+
+        .pwa-simple-header .month-selector-center {
+          flex: 1;
+          justify-content: center;
+        }
+
+        .pwa-simple-header .month-select,
+        .pwa-simple-header .year-select {
+          font-size: 0.78rem !important;
+        }
+
+        .pwa-simple-dashboard {
+          display: grid;
+          gap: 0.85rem;
+        }
+
+        .pwa-simple-balance,
+        .pwa-simple-card,
+        .pwa-simple-alert {
+          border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+          border-radius: 1.55rem;
+          background: color-mix(in srgb, var(--surface) 96%, transparent);
+          box-shadow: 0 14px 30px rgba(2, 6, 23, 0.10);
+        }
+
+        .pwa-simple-balance {
+          padding: 1.05rem;
+          color: white;
+          border: 0;
+          background:
+            radial-gradient(circle at top right, rgba(255, 255, 255, 0.20), transparent 34%),
+            linear-gradient(135deg, var(--accent-500), color-mix(in srgb, var(--accent-600) 72%, #2563eb 28%));
+        }
+
+        .pwa-simple-balance-negative {
+          background:
+            radial-gradient(circle at top right, rgba(255, 255, 255, 0.18), transparent 34%),
+            linear-gradient(135deg, #e11d48, #991b1b);
+        }
+
+        .pwa-simple-balance > span {
+          font-size: 0.72rem;
+          font-weight: 950;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          opacity: 0.78;
+        }
+
+        .pwa-simple-balance h2 {
+          margin-top: 0.35rem;
+          font-size: clamp(2rem, 10vw, 2.65rem);
+          line-height: 1;
+          font-weight: 1000;
+          letter-spacing: -0.08em;
+        }
+
+        .pwa-simple-balance p {
+          margin-top: 0.45rem;
+          font-size: 0.82rem;
+          font-weight: 800;
+          opacity: 0.82;
+        }
+
+        .pwa-simple-balance-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 0.55rem;
+          margin-top: 0.95rem;
+        }
+
+        .pwa-simple-balance-grid button {
+          border: 1px solid rgba(255, 255, 255, 0.18);
+          border-radius: 1.05rem;
+          padding: 0.75rem;
+          text-align: left;
+          background: rgba(255, 255, 255, 0.12);
+          color: white;
+        }
+
+        .pwa-simple-balance-grid span,
+        .pwa-simple-balance-grid strong {
+          display: block;
+        }
+
+        .pwa-simple-balance-grid span {
+          font-size: 0.68rem;
+          font-weight: 900;
+          opacity: 0.75;
+        }
+
+        .pwa-simple-balance-grid strong {
+          margin-top: 0.25rem;
+          font-size: 0.95rem;
+          font-weight: 950;
+        }
+
+        .pwa-simple-card {
+          padding: 0.9rem;
+        }
+
+        .pwa-simple-section-title {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.75rem;
+          margin-bottom: 0.75rem;
+        }
+
+        .pwa-simple-section-title h3 {
+          font-size: 0.98rem;
+          font-weight: 950;
+          letter-spacing: -0.03em;
+        }
+
+        .pwa-simple-section-title span,
+        .pwa-simple-section-title button {
+          color: var(--muted);
+          font-size: 0.72rem;
+          font-weight: 900;
+        }
+
+        .pwa-simple-actions-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 0.55rem;
+        }
+
+        .pwa-simple-action {
+          display: flex;
+          align-items: center;
+          gap: 0.55rem;
+          min-height: 3.25rem;
+          border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+          border-radius: 1.1rem;
+          padding: 0 0.85rem;
+          background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+          color: var(--text);
+          font-size: 0.85rem;
+          font-weight: 950;
+        }
+
+        .pwa-simple-action-expense { color: #fb7185; }
+        .pwa-simple-action-income { color: #34d399; }
+
+        .pwa-simple-info-list,
+        .pwa-simple-transactions {
+          display: grid;
+          gap: 0.5rem;
+        }
+
+        .pwa-simple-info-list button,
+        .pwa-simple-transactions button {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.85rem;
+          width: 100%;
+          border: 1px solid color-mix(in srgb, var(--border) 62%, transparent);
+          border-radius: 1.05rem;
+          padding: 0.75rem;
+          background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+          text-align: left;
+          color: var(--text);
+        }
+
+        .pwa-simple-info-list strong,
+        .pwa-simple-transactions strong {
+          display: block;
+          font-size: 0.84rem;
+          font-weight: 950;
+        }
+
+        .pwa-simple-info-list span,
+        .pwa-simple-transactions span {
+          display: block;
+          margin-top: 0.12rem;
+          color: var(--muted);
+          font-size: 0.72rem;
+          font-weight: 800;
+        }
+
+        .pwa-simple-info-list b,
+        .pwa-simple-transactions b {
+          flex-shrink: 0;
+          font-size: 0.82rem;
+          font-weight: 950;
+          white-space: nowrap;
+        }
+
+        .pwa-simple-alert {
+          padding: 0.85rem;
+          border-color: rgba(245, 158, 11, 0.30);
+          background: rgba(245, 158, 11, 0.10);
+        }
+
+        .pwa-simple-alert strong {
+          display: block;
+          color: #f59e0b;
+          font-size: 0.9rem;
+          font-weight: 950;
+        }
+
+        .pwa-simple-alert p {
+          margin-top: 0.25rem;
+          color: var(--muted);
+          font-size: 0.76rem;
+          line-height: 1.25rem;
+          font-weight: 750;
+        }
+
+        .pwa-simple-empty {
+          border: 1px dashed color-mix(in srgb, var(--border) 82%, transparent);
+          border-radius: 1rem;
+          padding: 0.85rem;
+          color: var(--muted);
+          font-size: 0.8rem;
+          font-weight: 850;
+          text-align: center;
+        }
+
+        .mobile-more-sheet {
+          padding: 0.85rem !important;
+          border-radius: 1.45rem !important;
+        }
+
+        .mobile-more-sheet .grid {
+          grid-template-columns: 1fr !important;
+        }
+
+        .mobile-more-button {
+          min-height: 3rem !important;
+          justify-content: flex-start !important;
+          padding: 0 0.9rem !important;
+        }
+
+        .mobile-bottom-nav {
+          left: 0.65rem !important;
+          right: 0.65rem !important;
+          bottom: calc(0.55rem + env(safe-area-inset-bottom)) !important;
+          gap: 0.25rem !important;
+          padding: 0.38rem !important;
+          border-radius: 1.25rem !important;
+        }
+
+        .mobile-bottom-button {
+          min-height: 2.9rem !important;
+          border-radius: 0.95rem !important;
+          font-size: 0.62rem !important;
+        }
+
+        .mobile-bottom-button svg {
+          width: 0.95rem !important;
+          height: 0.95rem !important;
+        }
+
+        .transactions-layout,
+        .cards-page-layout,
+        .payments-page,
+        .goals-page,
+        .recurring-page {
+          gap: 0.85rem !important;
+        }
+
+        .surface-card,
+        .transaction-row,
+        .field-shell {
+          border-radius: 1.25rem !important;
+        }
+
+        .surface-card {
+          padding: 0.9rem !important;
+        }
+
+        .dashboard-charts-row,
+        .dashboard-comparison-row,
+        .recharts-responsive-container {
+          display: none !important;
+        }
+      }
+
 
     `}</style>
   );
