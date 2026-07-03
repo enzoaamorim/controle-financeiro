@@ -6451,7 +6451,11 @@ function MobileSimpleHeader({ userName, currentTab, selectedMonth, onChangeMonth
 function MobileSimpleDashboard({ summary, selectedMonth, notifications = [], topExpenses = [], recentTransactions = [], cardUsage = [], goals = [], onAction, setPage, onOpenTransactions }) {
   const mainAlert = notifications[0];
   const topExpense = topExpenses[0];
+  const topExpenseValue = Number(topExpense?.value || 0);
+  const hasTopExpense = Boolean(topExpense?.name) && Number.isFinite(topExpenseValue) && topExpenseValue > 0;
   const cardFocus = [...cardUsage].sort((a, b) => Number(b.percent || 0) - Number(a.percent || 0))[0];
+  const cardFocusSpent = Number(cardFocus?.spent || 0);
+  const hasCardFocus = Boolean(cardFocus) && Number.isFinite(cardFocusSpent);
   const goalFocus = goals[0];
 
   return (
@@ -6503,13 +6507,13 @@ function MobileSimpleDashboard({ summary, selectedMonth, notifications = [], top
           <span>Sem gráficos no PWA</span>
         </div>
         <div className="pwa-simple-info-list">
-          <button type="button" onClick={() => topExpense ? onOpenTransactions?.({ categories: [topExpense.name], types: ["expense"] }) : onAction?.("expense")}>
-            <div><strong>Maior gasto</strong><span>{topExpense?.name || "Cadastre uma despesa"}</span></div>
-            <b>{topExpense ? money.format(topExpense.value) : "—"}</b>
+          <button type="button" onClick={() => hasTopExpense ? onOpenTransactions?.({ categories: [topExpense.name], types: ["expense"] }) : onAction?.("expense")}>
+            <div><strong>Maior gasto</strong><span>{hasTopExpense ? topExpense.name : "Cadastre uma despesa"}</span></div>
+            <b>{hasTopExpense ? money.format(topExpenseValue) : "—"}</b>
           </button>
           <button type="button" onClick={() => setPage?.("cards")}>
             <div><strong>Cartão em foco</strong><span>{cardFocus?.name || "Nenhum cartão cadastrado"}</span></div>
-            <b>{cardFocus ? money.format(cardFocus.spent || 0) : "—"}</b>
+            <b>{hasCardFocus ? money.format(cardFocusSpent) : "—"}</b>
           </button>
           <button type="button" onClick={() => setPage?.("goals")}>
             <div><strong>Meta</strong><span>{goalFocus?.title || "Nenhuma meta ativa"}</span></div>
@@ -6701,7 +6705,7 @@ function MobileBottomNav({ tabs, page, setPage, moreOpen = false, setMoreOpen = 
 
       <nav className="mobile-bottom-nav" aria-label="Menu rápido mobile">
         {mainTabs.map((tab) => {
-          const mobileLabel = tab.key === "transactions" ? "Lançar" : tab.label;
+          const mobileLabel = tab.key === "transactions" ? "Lançar" : tab.key === "payments" ? "Pagar" : tab.label;
           const mobileIcon = tab.key === "transactions" ? <Plus size={17} /> : tab.icon;
 
           return (
@@ -14986,6 +14990,84 @@ function GlobalStyles() {
         .dashboard-comparison-row,
         .recharts-responsive-container {
           display: none !important;
+        }
+      }
+
+
+      /* Correção final do menu inferior no PWA: fixo no rodapé, compacto e sem espaço sobrando */
+      @media (max-width: 768px) {
+        .finance-bento-shell {
+          padding-bottom: calc(4.85rem + env(safe-area-inset-bottom)) !important;
+        }
+
+        .mobile-bottom-nav {
+          position: fixed !important;
+          left: 0 !important;
+          right: 0 !important;
+          bottom: 0 !important;
+          width: auto !important;
+          display: grid !important;
+          grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+          align-items: center !important;
+          gap: 0.18rem !important;
+          padding: 0.35rem 0.5rem calc(0.35rem + env(safe-area-inset-bottom)) !important;
+          border-radius: 1.2rem 1.2rem 0 0 !important;
+          border-left: 0 !important;
+          border-right: 0 !important;
+          border-bottom: 0 !important;
+          border-top: 1px solid color-mix(in srgb, var(--border) 78%, transparent) !important;
+          background: color-mix(in srgb, var(--surface) 98%, transparent) !important;
+          box-shadow: 0 -12px 34px rgba(2, 6, 23, 0.30) !important;
+          backdrop-filter: blur(18px) saturate(1.1) !important;
+          z-index: 80 !important;
+        }
+
+        .mobile-bottom-button {
+          min-width: 0 !important;
+          min-height: 3.05rem !important;
+          gap: 0.18rem !important;
+          padding: 0.34rem 0.18rem !important;
+          border-radius: 0.95rem !important;
+          background: transparent !important;
+          color: var(--muted) !important;
+          font-size: 0.61rem !important;
+          line-height: 1 !important;
+          box-shadow: none !important;
+          transform: none !important;
+        }
+
+        .mobile-bottom-button svg {
+          width: 1.05rem !important;
+          height: 1.05rem !important;
+        }
+
+        .mobile-bottom-button span {
+          max-width: 4.35rem !important;
+          overflow: hidden !important;
+          text-overflow: ellipsis !important;
+          white-space: nowrap !important;
+        }
+
+        .mobile-bottom-active {
+          background: linear-gradient(135deg, var(--accent-600), var(--accent-500)) !important;
+          color: #ffffff !important;
+          box-shadow: 0 10px 22px color-mix(in srgb, var(--accent-500) 26%, transparent) !important;
+        }
+
+        .mobile-bottom-button:nth-child(2):not(.mobile-bottom-active) {
+          background: color-mix(in srgb, var(--accent-500) 8%, transparent) !important;
+          color: var(--accent-400) !important;
+        }
+
+        .mobile-more-sheet {
+          bottom: calc(4.9rem + env(safe-area-inset-bottom)) !important;
+          left: 0.75rem !important;
+          right: 0.75rem !important;
+          max-height: calc(100dvh - 7.2rem - env(safe-area-inset-top) - env(safe-area-inset-bottom)) !important;
+        }
+
+        .mobile-nav-dim {
+          z-index: 70 !important;
         }
       }
 
