@@ -5370,15 +5370,6 @@ function Dashboard({ darkMode, setDarkMode, accentColor, setAccentColor, density
 
       <ToastCustom toast={toast} onClose={hideToast} />
       <ConfirmModal modal={confirmModal} onClose={closeConfirmModal} />
-      {!mobileMoreOpen && (
-        <MobileQuickActionFab
-          open={mobileQuickActionsOpen}
-          setOpen={setMobileQuickActionsOpen}
-          onAction={handleMobileQuickAction}
-          page={page}
-        />
-      )}
-
       <header className="dashboard-unified-topbar surface-card" aria-label="Topo e navegação principal">
         <div className="dashboard-unified-brand">
           <img src={logoEA} alt="Logo" className="dashboard-unified-logo object-cover" />
@@ -5596,13 +5587,6 @@ function Dashboard({ darkMode, setDarkMode, accentColor, setAccentColor, density
           </div>
         </section>
       )}
-
-      <MobileQuickShortcuts
-        onExpense={() => handleMobileQuickAction("expense")}
-        onIncome={() => handleMobileQuickAction("income")}
-        onPayment={() => handleMobileQuickAction("payment")}
-        onCards={() => handleMobileQuickAction("card")}
-      />
 
       {page === "dashboard" && (
         <>
@@ -6448,81 +6432,51 @@ function MobileSimpleHeader({ userName, currentTab, selectedMonth, onChangeMonth
   );
 }
 
-function MobileSimpleDashboard({ summary, selectedMonth, notifications = [], topExpenses = [], recentTransactions = [], cardUsage = [], goals = [], onAction, setPage, onOpenTransactions }) {
+function MobileSimpleDashboard({ summary, selectedMonth, notifications = [], recentTransactions = [], onAction, setPage, onOpenTransactions }) {
   const mainAlert = notifications[0];
-  const topExpense = topExpenses[0];
-  const topExpenseValue = Number(topExpense?.value || 0);
-  const hasTopExpense = Boolean(topExpense?.name) && Number.isFinite(topExpenseValue) && topExpenseValue > 0;
-  const cardFocus = [...cardUsage].sort((a, b) => Number(b.percent || 0) - Number(a.percent || 0))[0];
-  const cardFocusSpent = Number(cardFocus?.spent || 0);
-  const hasCardFocus = Boolean(cardFocus) && Number.isFinite(cardFocusSpent);
-  const goalFocus = goals[0];
+  const hasIncome = Number(summary.income || 0) > 0;
+  const hasExpense = Number(summary.expense || 0) > 0;
 
   return (
-    <main className="pwa-simple-dashboard" aria-label="Painel simplificado do PWA">
+    <main className="pwa-simple-dashboard pwa-daily-mode" aria-label="Painel simplificado do PWA">
       <section className={classNames("pwa-simple-balance", summary.balance < 0 && "pwa-simple-balance-negative")}> 
-        <span>{safeMonthLabel(selectedMonth)}</span>
+        <span>Saldo de {safeMonthLabel(selectedMonth)}</span>
         <h2>{money.format(summary.balance)}</h2>
-        <p>{summary.balance >= 0 ? "Saldo disponível no mês" : "Saldo negativo no mês"}</p>
+        <p>{summary.balance >= 0 ? "Disponível para este mês" : "Suas despesas passaram das receitas"}</p>
         <div className="pwa-simple-balance-grid">
           <button type="button" onClick={() => onOpenTransactions?.({ types: ["income"] })}>
-            <span>Receitas</span>
+            <span>Entradas</span>
             <strong>{money.format(summary.income)}</strong>
           </button>
           <button type="button" onClick={() => onOpenTransactions?.({ types: ["expense"] })}>
-            <span>Despesas</span>
+            <span>Saídas</span>
             <strong>{money.format(summary.expense)}</strong>
           </button>
         </div>
       </section>
 
-      <section className="pwa-simple-card">
+      <section className="pwa-simple-card pwa-main-actions-card">
         <div className="pwa-simple-section-title">
-          <h3>Ações principais</h3>
-          <span>Use em poucos toques</span>
+          <h3>O que deseja fazer?</h3>
+          <span>Escolha uma ação</span>
         </div>
-        <div className="pwa-simple-actions-grid">
+        <div className="pwa-simple-actions-grid pwa-simple-actions-grid-3">
           <button type="button" onClick={() => onAction?.("expense")} className="pwa-simple-action pwa-simple-action-expense">
-            <ArrowDownCircle size={20} />
-            <span>Despesa</span>
+            <ArrowDownCircle size={22} />
+            <span>Adicionar gasto</span>
           </button>
           <button type="button" onClick={() => onAction?.("income")} className="pwa-simple-action pwa-simple-action-income">
-            <ArrowUpCircle size={20} />
-            <span>Receita</span>
+            <ArrowUpCircle size={22} />
+            <span>Adicionar entrada</span>
           </button>
           <button type="button" onClick={() => onAction?.("payment")} className="pwa-simple-action">
-            <CheckCircle2 size={20} />
-            <span>Pagar</span>
-          </button>
-          <button type="button" onClick={() => setPage?.("cards")} className="pwa-simple-action">
-            <CreditCard size={20} />
-            <span>Cartões</span>
+            <CheckCircle2 size={22} />
+            <span>Pagar algo</span>
           </button>
         </div>
       </section>
 
-      <section className="pwa-simple-card">
-        <div className="pwa-simple-section-title">
-          <h3>Resumo rápido</h3>
-          <span>Sem gráficos no PWA</span>
-        </div>
-        <div className="pwa-simple-info-list">
-          <button type="button" onClick={() => hasTopExpense ? onOpenTransactions?.({ categories: [topExpense.name], types: ["expense"] }) : onAction?.("expense")}>
-            <div><strong>Maior gasto</strong><span>{hasTopExpense ? topExpense.name : "Cadastre uma despesa"}</span></div>
-            <b>{hasTopExpense ? money.format(topExpenseValue) : "—"}</b>
-          </button>
-          <button type="button" onClick={() => setPage?.("cards")}>
-            <div><strong>Cartão em foco</strong><span>{cardFocus?.name || "Nenhum cartão cadastrado"}</span></div>
-            <b>{hasCardFocus ? money.format(cardFocusSpent) : "—"}</b>
-          </button>
-          <button type="button" onClick={() => setPage?.("goals")}>
-            <div><strong>Meta</strong><span>{goalFocus?.title || "Nenhuma meta ativa"}</span></div>
-            <b>{goalFocus ? `${Math.min(100, Math.round((Number(goalFocus.current_amount || 0) / Math.max(1, Number(goalFocus.target_amount || 1))) * 100))}%` : "—"}</b>
-          </button>
-        </div>
-      </section>
-
-      {mainAlert && (
+      {mainAlert && (hasIncome || hasExpense) && (
         <section className="pwa-simple-alert" role="status">
           <div>
             <strong>{mainAlert.title}</strong>
@@ -6531,13 +6485,13 @@ function MobileSimpleDashboard({ summary, selectedMonth, notifications = [], top
         </section>
       )}
 
-      <section className="pwa-simple-card">
+      <section className="pwa-simple-card pwa-recent-only-card">
         <div className="pwa-simple-section-title">
           <h3>Últimos lançamentos</h3>
           <button type="button" onClick={() => setPage?.("transactions")}>Ver todos</button>
         </div>
         <div className="pwa-simple-transactions">
-          {recentTransactions.length ? recentTransactions.map((item) => (
+          {recentTransactions.length ? recentTransactions.slice(0, 3).map((item) => (
             <button key={item.id} type="button" onClick={() => onOpenTransactions?.({ search: item.description })}>
               <div>
                 <strong>{item.description}</strong>
@@ -6546,7 +6500,10 @@ function MobileSimpleDashboard({ summary, selectedMonth, notifications = [], top
               <b className={item.type === "income" ? "text-emerald-400" : "text-rose-400"}>{item.type === "income" ? "+" : "-"}{money.format(item.amount)}</b>
             </button>
           )) : (
-            <div className="pwa-simple-empty">Nenhum lançamento neste mês.</div>
+            <div className="pwa-simple-empty pwa-simple-empty-compact">
+              <strong>Nenhum lançamento ainda</strong>
+              <span>Toque em “Adicionar gasto” para começar.</span>
+            </div>
           )}
         </div>
       </section>
@@ -15147,6 +15104,377 @@ function GlobalStyles() {
         to { opacity: 1; transform: translateY(0) scale(1); }
       }
 
+
+
+
+      /* Correção global PWA: todos os modais/confirmacões devem abrir como overlay real, acima da tela atual */
+      .edit-modal-backdrop,
+      .confirm-overlay,
+      .alert-detail-backdrop,
+      .monthly-summary-backdrop {
+        position: fixed !important;
+        inset: 0 !important;
+        width: 100vw !important;
+        height: 100dvh !important;
+        z-index: 9999 !important;
+        background: rgba(2, 6, 23, 0.58) !important;
+        backdrop-filter: blur(12px) saturate(1.08) !important;
+        -webkit-backdrop-filter: blur(12px) saturate(1.08) !important;
+      }
+
+      .finance-bento-shell > .edit-modal-backdrop,
+      .finance-bento-shell > .confirm-overlay,
+      .finance-bento-shell > .alert-detail-backdrop,
+      .finance-bento-shell > .monthly-summary-backdrop {
+        position: fixed !important;
+        inset: 0 !important;
+        z-index: 9999 !important;
+      }
+
+      .edit-modal-shell,
+      .confirm-card,
+      .monthly-summary-modal {
+        z-index: 10000 !important;
+        position: relative !important;
+      }
+
+      .confirm-overlay {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        padding: 1rem !important;
+      }
+
+      .edit-modal-backdrop {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        padding: 1rem !important;
+        overflow: hidden !important;
+      }
+
+      @media (max-width: 768px) {
+        body:has(.edit-modal-backdrop),
+        body:has(.confirm-overlay),
+        body:has(.alert-detail-backdrop),
+        body:has(.monthly-summary-backdrop) {
+          overflow: hidden !important;
+          touch-action: none !important;
+        }
+
+        .edit-modal-backdrop,
+        .confirm-overlay,
+        .alert-detail-backdrop,
+        .monthly-summary-backdrop {
+          height: 100dvh !important;
+          min-height: 100dvh !important;
+          max-height: 100dvh !important;
+          padding: max(0.75rem, env(safe-area-inset-top)) 0.75rem max(0.75rem, env(safe-area-inset-bottom)) 0.75rem !important;
+        }
+
+        .edit-modal-backdrop {
+          align-items: flex-end !important;
+          justify-content: center !important;
+        }
+
+        .edit-modal-shell {
+          width: 100% !important;
+          max-width: none !important;
+          max-height: calc(100dvh - max(1.5rem, env(safe-area-inset-top)) - max(1.5rem, env(safe-area-inset-bottom))) !important;
+          border-radius: 1.55rem 1.55rem 0 0 !important;
+          box-shadow: 0 -24px 80px rgba(2, 6, 23, 0.54) !important;
+          animation: mobileSheetIn .22s cubic-bezier(.2,.8,.2,1) both !important;
+        }
+
+        .confirm-overlay {
+          align-items: center !important;
+          justify-content: center !important;
+        }
+
+        .confirm-card {
+          width: 100% !important;
+          max-width: 25rem !important;
+          border-radius: 1.55rem !important;
+          padding: 1.15rem !important;
+          box-shadow: 0 24px 80px rgba(2, 6, 23, 0.52) !important;
+        }
+
+        .confirm-card h2 {
+          font-size: 1.35rem !important;
+          line-height: 1.15 !important;
+        }
+
+        .confirm-card p {
+          font-size: 0.86rem !important;
+          line-height: 1.45rem !important;
+        }
+
+        .confirm-card .outline-button,
+        .confirm-card .confirm-danger-button,
+        .confirm-card .confirm-default-button {
+          min-height: 3rem !important;
+          width: 100% !important;
+        }
+
+        .mobile-bottom-nav {
+          z-index: 80 !important;
+        }
+      }
+
+
+      /* PWA Modo Simples — reduz informações e deixa o uso diário mais objetivo */
+      @media (max-width: 768px) {
+        .finance-bento-hero,
+        .desktop-dashboard-content,
+        .mobile-quick-shortcuts,
+        .mobile-fab-button,
+        .mobile-action-sheet,
+        .mobile-action-dim,
+        .dashboard-unified-topbar {
+          display: none !important;
+        }
+
+        .app-shell {
+          --pwa-bottom-space: calc(4.85rem + env(safe-area-inset-bottom));
+        }
+
+        .dashboard-shell,
+        .dashboard-main,
+        .dashboard-content,
+        main {
+          scroll-behavior: smooth;
+        }
+
+        .pwa-simple-header {
+          margin-bottom: 0.65rem !important;
+          padding: 1rem 1rem 1rem !important;
+          border-radius: 1.55rem !important;
+        }
+
+        .pwa-simple-header-row {
+          margin-bottom: 0.75rem !important;
+        }
+
+        .pwa-simple-hello {
+          font-size: 0.78rem !important;
+          opacity: 0.75 !important;
+        }
+
+        .pwa-simple-header strong {
+          font-size: 1.35rem !important;
+          line-height: 1.2 !important;
+        }
+
+        .pwa-simple-header .month-selector,
+        .pwa-simple-header .month-selector-shell {
+          min-height: 3.15rem !important;
+          border-radius: 1.25rem !important;
+        }
+
+        .pwa-simple-dashboard {
+          gap: 0.7rem !important;
+          padding-bottom: calc(var(--pwa-bottom-space) + 0.4rem) !important;
+        }
+
+        .pwa-simple-balance {
+          padding: 1rem !important;
+          border-radius: 1.55rem !important;
+        }
+
+        .pwa-simple-balance > span {
+          font-size: 0.76rem !important;
+        }
+
+        .pwa-simple-balance h2 {
+          font-size: clamp(2rem, 10vw, 2.8rem) !important;
+          line-height: 1 !important;
+          margin-top: 0.35rem !important;
+        }
+
+        .pwa-simple-balance p {
+          margin-top: 0.4rem !important;
+          font-size: 0.84rem !important;
+        }
+
+        .pwa-simple-balance-grid {
+          margin-top: 0.85rem !important;
+          gap: 0.55rem !important;
+        }
+
+        .pwa-simple-balance-grid button {
+          min-height: 4.1rem !important;
+          padding: 0.75rem !important;
+          border-radius: 1.15rem !important;
+        }
+
+        .pwa-simple-balance-grid button span {
+          font-size: 0.72rem !important;
+        }
+
+        .pwa-simple-balance-grid button strong {
+          font-size: 1.08rem !important;
+        }
+
+        .pwa-simple-card {
+          padding: 0.95rem !important;
+          border-radius: 1.45rem !important;
+        }
+
+        .pwa-simple-section-title {
+          margin-bottom: 0.75rem !important;
+        }
+
+        .pwa-simple-section-title h3 {
+          font-size: 1rem !important;
+        }
+
+        .pwa-simple-section-title span {
+          font-size: 0.72rem !important;
+        }
+
+        .pwa-simple-actions-grid {
+          gap: 0.55rem !important;
+        }
+
+        .pwa-simple-actions-grid-3 {
+          grid-template-columns: 1fr !important;
+        }
+
+        .pwa-simple-action {
+          min-height: 3.65rem !important;
+          border-radius: 1.15rem !important;
+          justify-content: flex-start !important;
+          padding: 0.8rem 0.9rem !important;
+          gap: 0.65rem !important;
+          font-size: 0.92rem !important;
+        }
+
+        .pwa-simple-alert {
+          border-radius: 1.35rem !important;
+          padding: 0.95rem !important;
+        }
+
+        .pwa-simple-alert strong {
+          font-size: 0.96rem !important;
+        }
+
+        .pwa-simple-alert p {
+          font-size: 0.82rem !important;
+          line-height: 1.35rem !important;
+        }
+
+        .pwa-simple-transactions {
+          gap: 0.55rem !important;
+        }
+
+        .pwa-simple-transactions button {
+          padding: 0.85rem !important;
+          border-radius: 1.15rem !important;
+        }
+
+        .pwa-simple-transactions button strong {
+          font-size: 0.9rem !important;
+        }
+
+        .pwa-simple-transactions button span {
+          font-size: 0.74rem !important;
+        }
+
+        .pwa-simple-empty-compact {
+          display: grid !important;
+          gap: 0.2rem !important;
+          min-height: auto !important;
+          padding: 1rem !important;
+          text-align: left !important;
+        }
+
+        .pwa-simple-empty-compact strong {
+          font-size: 0.95rem !important;
+        }
+
+        .pwa-simple-empty-compact span {
+          color: var(--muted) !important;
+          font-size: 0.8rem !important;
+          font-weight: 700 !important;
+        }
+
+        /* Menos poluição em páginas internas no PWA */
+        .notifications-panel,
+        .dashboard-attention-strip,
+        .smart-insights-grid,
+        .dashboard-radar,
+        .dashboard-focus-grid,
+        .dashboard-timeline,
+        .reports-chart-card,
+        .chart-card,
+        .recharts-responsive-container,
+        .recharts-wrapper {
+          display: none !important;
+        }
+
+        #new-transaction-form-card {
+          padding: 1rem !important;
+          border-radius: 1.45rem !important;
+        }
+
+        #new-transaction-form-card h2 {
+          font-size: 1.15rem !important;
+        }
+
+        #new-transaction-form-card p,
+        #new-transaction-form-card .outline-button.mb-4 {
+          display: none !important;
+        }
+
+        .compact-entry-card .grid,
+        .compact-entry-card form .grid {
+          gap: 0.65rem !important;
+        }
+
+        .compact-entry-card .input,
+        .compact-entry-card input,
+        .compact-entry-card select,
+        .compact-entry-card textarea {
+          min-height: 3rem !important;
+          font-size: 0.95rem !important;
+        }
+
+        .mobile-bottom-nav {
+          height: auto !important;
+          padding: 0.35rem 0.45rem calc(0.35rem + env(safe-area-inset-bottom)) !important;
+          border-radius: 1.25rem 1.25rem 0 0 !important;
+        }
+
+        .mobile-bottom-button {
+          min-height: 3.6rem !important;
+          border-radius: 1.05rem !important;
+          gap: 0.22rem !important;
+        }
+
+        .mobile-bottom-button span {
+          max-width: 4.5rem !important;
+          font-size: 0.68rem !important;
+          white-space: nowrap !important;
+          overflow: hidden !important;
+          text-overflow: ellipsis !important;
+        }
+
+        .mobile-bottom-active {
+          transform: none !important;
+          box-shadow: 0 10px 28px color-mix(in srgb, var(--accent) 22%, transparent) !important;
+        }
+
+        .mobile-more-sheet {
+          border-radius: 1.5rem 1.5rem 0 0 !important;
+          padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom)) !important;
+        }
+
+        .mobile-more-button {
+          min-height: 3.6rem !important;
+          border-radius: 1.1rem !important;
+          font-size: 0.88rem !important;
+        }
+      }
 
     `}</style>
   );
