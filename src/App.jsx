@@ -15072,6 +15072,82 @@ function GlobalStyles() {
       }
 
 
+      /* Ajuste do menu "Mais" no PWA: sheet acima da navegação, completo e com fundo translúcido */
+      @media (max-width: 768px) {
+        .mobile-nav-dim {
+          position: fixed !important;
+          inset: 0 !important;
+          display: block !important;
+          z-index: 72 !important;
+          background: rgba(2, 6, 23, 0.46) !important;
+          backdrop-filter: blur(7px) saturate(1.08) !important;
+          -webkit-backdrop-filter: blur(7px) saturate(1.08) !important;
+          animation: mobileDimIn .16s ease both !important;
+        }
+
+        .mobile-more-sheet {
+          position: fixed !important;
+          left: 0.75rem !important;
+          right: 0.75rem !important;
+          bottom: calc(4.95rem + env(safe-area-inset-bottom)) !important;
+          z-index: 96 !important;
+          display: block !important;
+          width: auto !important;
+          max-height: min(22rem, calc(100dvh - 7.8rem - env(safe-area-inset-top) - env(safe-area-inset-bottom))) !important;
+          overflow-y: auto !important;
+          padding: 0.9rem !important;
+          border-radius: 1.45rem !important;
+          border: 1px solid color-mix(in srgb, var(--border) 76%, transparent) !important;
+          background: color-mix(in srgb, var(--surface) 90%, transparent) !important;
+          box-shadow: 0 24px 70px rgba(2, 6, 23, 0.52) !important;
+          backdrop-filter: blur(22px) saturate(1.12) !important;
+          -webkit-backdrop-filter: blur(22px) saturate(1.12) !important;
+          transform-origin: bottom center !important;
+          animation: mobileMoreSheetIn .2s cubic-bezier(.2,.8,.2,1) both !important;
+        }
+
+        .mobile-more-sheet .grid {
+          display: grid !important;
+          grid-template-columns: 1fr !important;
+          gap: 0.55rem !important;
+        }
+
+        .mobile-more-button {
+          min-height: 3.05rem !important;
+          width: 100% !important;
+          justify-content: flex-start !important;
+          padding: 0 0.9rem !important;
+          border-radius: 1rem !important;
+          background: color-mix(in srgb, var(--surface-2) 82%, transparent) !important;
+          border: 1px solid color-mix(in srgb, var(--border) 82%, transparent) !important;
+        }
+
+        .mobile-more-button svg {
+          flex: 0 0 auto !important;
+        }
+
+        .mobile-more-button span {
+          overflow: hidden !important;
+          text-overflow: ellipsis !important;
+          white-space: nowrap !important;
+        }
+
+        .mobile-bottom-nav {
+          z-index: 82 !important;
+        }
+      }
+
+      @keyframes mobileDimIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+
+      @keyframes mobileMoreSheetIn {
+        from { opacity: 0; transform: translateY(18px) scale(.98); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
+      }
+
+
     `}</style>
   );
 }
