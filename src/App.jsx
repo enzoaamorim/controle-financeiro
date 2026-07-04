@@ -764,9 +764,14 @@ function buildInvoiceInstallmentSummary(plan, payments = []) {
   const relatedPayments = payments.filter((payment) => payment.invoice_installment_id === plan.id);
   const paidAmount = roundMoneyValue(relatedPayments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0));
   const totalAmount = Number(plan.total_amount || 0);
-  const financedAmount = Number(plan.financed_amount || Math.max(0, totalAmount - Number(plan.entry_amount || 0)));
+  const entryAmount = Number(plan.entry_amount || 0);
+  const financedAmount = Number(plan.financed_amount || Math.max(0, totalAmount - entryAmount));
   const installments = clampInvoiceInstallments(plan.installments || 1);
-  const monthlyAmount = Number(plan.monthly_amount || (installments > 0 ? financedAmount / installments : 0));
+  const suggestedMonthlyAmount = installments > 0 ? roundMoneyValue(financedAmount / installments) : 0;
+  const monthlyAmount = roundMoneyValue(Number(plan.monthly_amount || suggestedMonthlyAmount));
+  const totalInstallmentsAmount = roundMoneyValue(monthlyAmount * installments);
+  const agreementTotalAmount = roundMoneyValue(entryAmount + totalInstallmentsAmount);
+  const interestAmount = roundMoneyValue(Math.max(0, agreementTotalAmount - totalAmount));
   const paidInstallmentsSet = new Set(
     relatedPayments
       .filter((payment) => payment.payment_type === "installment" && Number(payment.installment_number || 0) > 0)
@@ -781,10 +786,10 @@ function buildInvoiceInstallmentSummary(plan, payments = []) {
     }
   }
 
-  const openAmount = Math.max(0, roundMoneyValue(totalAmount - paidAmount));
+  const openAmount = Math.max(0, roundMoneyValue(agreementTotalAmount - paidAmount));
   const financedPaidAmount = roundMoneyValue(relatedPayments.filter((payment) => payment.payment_type !== "entry").reduce((sum, payment) => sum + Number(payment.amount || 0), 0));
-  const financedOpenAmount = Math.max(0, roundMoneyValue(financedAmount - financedPaidAmount));
-  const progress = totalAmount > 0 ? Math.min(100, Math.round((paidAmount / totalAmount) * 100)) : 0;
+  const financedOpenAmount = Math.max(0, roundMoneyValue(totalInstallmentsAmount - financedPaidAmount));
+  const progress = agreementTotalAmount > 0 ? Math.min(100, Math.round((paidAmount / agreementTotalAmount) * 100)) : 0;
   const nextDueDate = nextInstallmentNumber && plan.first_due_date ? addMonthsToISO(plan.first_due_date, nextInstallmentNumber - 1) : "";
   const lastDueDate = plan.first_due_date ? addMonthsToISO(plan.first_due_date, installments - 1) : "";
   const today = todayISODate();
@@ -795,7 +800,12 @@ function buildInvoiceInstallmentSummary(plan, payments = []) {
     relatedPayments,
     paidAmount,
     totalAmount,
+    entryAmount,
     financedAmount,
+    suggestedMonthlyAmount,
+    totalInstallmentsAmount,
+    agreementTotalAmount,
+    interestAmount,
     financedPaidAmount,
     financedOpenAmount,
     installments,
@@ -4259,7 +4269,9 @@ function Dashboard({ darkMode, setDarkMode, accentColor, setAccentColor, density
     const entryAmount = Math.min(totalAmount, Math.max(0, roundMoneyValue(toNumber(plan.entry_amount))));
     const financedAmount = Math.max(0, roundMoneyValue(totalAmount - entryAmount));
     const installments = clampInvoiceInstallments(plan.installments);
-    const monthlyAmount = installments > 0 ? roundMoneyValue(financedAmount / installments) : 0;
+    const suggestedMonthlyAmount = installments > 0 ? roundMoneyValue(financedAmount / installments) : 0;
+    const informedMonthlyAmount = roundMoneyValue(toNumber(plan.monthly_amount));
+    const monthlyAmount = informedMonthlyAmount > 0 ? informedMonthlyAmount : suggestedMonthlyAmount;
     const firstDueDate = plan.first_due_date || todayISODate();
 
     if (!card) {
@@ -4284,6 +4296,11 @@ function Dashboard({ darkMode, setDarkMode, accentColor, setAccentColor, density
 
     if (!financedAmount || financedAmount <= 0 || installments < 1) {
       showToast("Informe uma quantidade válida de parcelas para o valor restante.", "warning");
+      return false;
+    }
+
+    if (!monthlyAmount || monthlyAmount <= 0) {
+      showToast("Informe o valor real que será pago por mês.", "warning");
       return false;
     }
 
@@ -4417,7 +4434,7 @@ function Dashboard({ darkMode, setDarkMode, accentColor, setAccentColor, density
       if (paymentError) throw paymentError;
 
       const paidAfter = roundMoneyValue(summary.paidAmount + safeAmount);
-      const shouldConclude = paymentType === "settlement" || paidAfter >= Number(plan.total_amount || 0) - 0.009 || safeAmount >= summary.openAmount;
+      const shouldConclude = paymentType === "settlement" || paidAfter >= Number(summary.agreementTotalAmount || 0) - 0.009 || safeAmount >= summary.openAmount;
 
       if (shouldConclude) {
         const { error: updateError } = await supabase
@@ -10107,6 +10124,7 @@ function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsag
     total_amount: "",
     entry_amount: "",
     installments: "2",
+    monthly_amount: "",
     first_due_date: todayISODate(),
     notes: "",
   };
@@ -10295,12 +10313,12 @@ function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsag
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowInvoiceInstallmentForm((value) => !value)}
+                  onClick={() => setShowInvoiceInstallmentForm(true)}
                   disabled={!hasCreditSelected}
                   className="outline-button inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-3 text-sm font-black disabled:cursor-not-allowed disabled:opacity-50"
                   title={!hasCreditSelected ? "Disponível apenas para cartões de crédito" : "Parcelar fatura"}
                 >
-                  <Repeat size={17} /> {showInvoiceInstallmentForm ? "Ocultar fatura" : "Parcelar fatura"}
+                  <Repeat size={17} /> Parcelar fatura
                 </button>
                 <button
                   type="button"
@@ -10322,18 +10340,17 @@ function CardsPage({ cardForm, setCardForm, onSubmit, onEdit, onDelete, cardUsag
               />
             )}
 
-            {showInvoiceInstallmentForm && (
-              <InvoiceInstallmentPlanBox
-                card={selectedCard}
-                selectedMonth={selectedMonth}
-                currentMonthAmount={selectedCardTransactions.filter((item) => item.date?.slice(0, 7) === selectedMonth).reduce((sum, item) => sum + Number(item.amount || 0), 0)}
-                openAmount={selectedCard.spent}
-                form={invoiceInstallmentForm}
-                setForm={setInvoiceInstallmentForm}
-                onSubmit={submitInvoiceInstallmentPlan}
-                onClose={() => setShowInvoiceInstallmentForm(false)}
-              />
-            )}
+            <InvoiceInstallmentPlanModal
+              open={showInvoiceInstallmentForm}
+              card={selectedCard}
+              selectedMonth={selectedMonth}
+              currentMonthAmount={selectedCardTransactions.filter((item) => item.date?.slice(0, 7) === selectedMonth).reduce((sum, item) => sum + Number(item.amount || 0), 0)}
+              openAmount={selectedCard.spent}
+              form={invoiceInstallmentForm}
+              setForm={setInvoiceInstallmentForm}
+              onSubmit={submitInvoiceInstallmentPlan}
+              onClose={() => setShowInvoiceInstallmentForm(false)}
+            />
 
             <CreditCardInvoicePanel
               card={selectedCard}
@@ -10537,6 +10554,34 @@ function CardInstallmentPurchaseBox({ card, form, setForm, onSubmit, onClose }) 
   );
 }
 
+function InvoiceInstallmentPlanModal({ open, card, selectedMonth, currentMonthAmount, openAmount, form, setForm, onSubmit, onClose }) {
+  if (!open) return null;
+
+  return (
+    <div
+      className="invoice-installment-modal-backdrop edit-modal-backdrop fixed inset-0 z-[95] flex items-end justify-center px-3 py-4 sm:items-center sm:px-4 sm:py-6"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Parcelar fatura"
+    >
+      <div
+        className="invoice-installment-modal-shell w-full max-w-5xl overflow-hidden rounded-[2rem] shadow-2xl"
+      >
+        <InvoiceInstallmentPlanBox
+          card={card}
+          selectedMonth={selectedMonth}
+          currentMonthAmount={currentMonthAmount}
+          openAmount={openAmount}
+          form={form}
+          setForm={setForm}
+          onSubmit={onSubmit}
+          onClose={onClose}
+        />
+      </div>
+    </div>
+  );
+}
+
 function InvoiceInstallmentPlanBox({ card, selectedMonth, currentMonthAmount, openAmount, form, setForm, onSubmit, onClose }) {
   const isCreditCard = card && isCreditLikeCardType(card.card_type);
   const sourceAmount =
@@ -10549,7 +10594,12 @@ function InvoiceInstallmentPlanBox({ card, selectedMonth, currentMonthAmount, op
   const entryAmount = Math.min(totalAmount, Math.max(0, roundMoneyValue(toNumber(form.entry_amount))));
   const financedAmount = Math.max(0, roundMoneyValue(totalAmount - entryAmount));
   const installments = clampInvoiceInstallments(form.installments);
-  const monthlyAmount = installments > 0 ? roundMoneyValue(financedAmount / installments) : 0;
+  const suggestedMonthlyAmount = installments > 0 ? roundMoneyValue(financedAmount / installments) : 0;
+  const informedMonthlyAmount = roundMoneyValue(toNumber(form.monthly_amount));
+  const monthlyAmount = informedMonthlyAmount > 0 ? informedMonthlyAmount : suggestedMonthlyAmount;
+  const totalInstallmentsAmount = roundMoneyValue(monthlyAmount * installments);
+  const agreementTotalAmount = roundMoneyValue(entryAmount + totalInstallmentsAmount);
+  const interestAmount = roundMoneyValue(Math.max(0, agreementTotalAmount - totalAmount));
   const firstDueDate = form.first_due_date || todayISODate();
   const lastDueDate = firstDueDate ? addMonthsToISO(firstDueDate, installments - 1) : "";
 
@@ -10612,32 +10662,48 @@ function InvoiceInstallmentPlanBox({ card, selectedMonth, currentMonthAmount, op
             </Field>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid gap-3 md:grid-cols-4">
             <Field label="Valor da entrada">
               <input type="number" min="0" step="0.01" value={form.entry_amount} onChange={(event) => update("entry_amount", event.target.value)} className="input" placeholder="0,00" />
             </Field>
             <Field label="Quantidade de parcelas">
               <input type="number" min="1" max="60" value={form.installments} onChange={(event) => update("installments", event.target.value)} className="input" placeholder="2" />
             </Field>
-            <Field label="Valor pago por mês">
-              <input value={monthlyAmount > 0 ? money.format(monthlyAmount) : ""} className="input" disabled placeholder="Calculado automático" />
+            <Field label="Valor sugerido">
+              <input value={suggestedMonthlyAmount > 0 ? money.format(suggestedMonthlyAmount) : ""} className="input" disabled placeholder="Automático" />
             </Field>
+            <Field label="Valor real por mês">
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.monthly_amount}
+                onChange={(event) => update("monthly_amount", event.target.value)}
+                className="input"
+                placeholder={suggestedMonthlyAmount > 0 ? suggestedMonthlyAmount.toFixed(2) : "0,00"}
+              />
+            </Field>
+          </div>
+
+          <div className="rounded-2xl border border-blue-500/20 bg-blue-500/10 p-4 text-xs font-bold leading-6 text-blue-400">
+            O campo “Valor real por mês” já pode considerar juros, IOF ou taxas do banco. Se deixar vazio, o app usa o valor sugerido automaticamente.
           </div>
 
           <Field label="Observação">
             <input value={form.notes} onChange={(event) => update("notes", event.target.value)} className="input" placeholder="Opcional. Ex.: acordo banco, taxa já inclusa, melhor dia para pagar" />
           </Field>
 
-          <div className="grid gap-3 rounded-[1.5rem] border border-violet-500/20 bg-violet-500/5 p-4 text-sm md:grid-cols-5">
-            <MiniInfo label="Valor total" value={money.format(totalAmount || 0)} />
+          <div className="grid gap-3 rounded-[1.5rem] border border-violet-500/20 bg-violet-500/5 p-4 text-sm md:grid-cols-6">
+            <MiniInfo label="Fatura original" value={money.format(totalAmount || 0)} />
             <MiniInfo label="Entrada" value={money.format(entryAmount || 0)} />
-            <MiniInfo label="Valor parcelado" value={money.format(financedAmount || 0)} />
-            <MiniInfo label="Parcelamento" value={financedAmount > 0 ? `${installments}x de ${money.format(monthlyAmount)}` : "Informe os valores"} />
-            <MiniInfo label="Última parcela" value={lastDueDate ? formatDateBR(lastDueDate) : "-"} />
+            <MiniInfo label="Restante sem juros" value={money.format(financedAmount || 0)} />
+            <MiniInfo label="Parcelamento real" value={financedAmount > 0 ? `${installments}x de ${money.format(monthlyAmount)}` : "Informe os valores"} />
+            <MiniInfo label="Total final" value={money.format(agreementTotalAmount || 0)} />
+            <MiniInfo label="Juros/taxas" value={interestAmount > 0 ? money.format(interestAmount) : "Sem diferença"} />
           </div>
 
           <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4 text-xs font-bold leading-6 text-amber-400">
-            Este registro não cria uma nova despesa. Ele controla o acordo da fatura e registra entrada/parcelas como pagamento do cartão, evitando duplicidade nos relatórios.
+            Última parcela prevista: <strong>{lastDueDate ? formatDateBR(lastDueDate) : "-"}</strong>. Este registro não cria uma nova despesa. Ele controla o acordo da fatura e registra entrada/parcelas como pagamento do cartão, evitando duplicidade nos relatórios.
           </div>
 
           <button className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-violet-600 px-4 py-3 font-black text-white transition hover:bg-violet-700">
@@ -10669,8 +10735,11 @@ function InvoiceInstallmentPlanCard({ plan, payments, onPayment, onCancel }) {
           </div>
           <h4 className="font-black">Parcelamento da fatura · {safeMonthLabel(plan.reference_month)}</h4>
           <p className="muted-text mt-1 text-sm">
-            Entrada {money.format(plan.entry_amount)} · {summary.installments}x de {money.format(summary.monthlyAmount)} · {formatDateBR(plan.first_due_date)} até {formatDateBR(summary.lastDueDate)}
+            Entrada {money.format(plan.entry_amount)} · {summary.installments}x de {money.format(summary.monthlyAmount)} · total final {money.format(summary.agreementTotalAmount)} · {formatDateBR(plan.first_due_date)} até {formatDateBR(summary.lastDueDate)}
           </p>
+          {summary.interestAmount > 0 && (
+            <p className="mt-1 text-xs font-black text-amber-400">Juros/taxas estimados: {money.format(summary.interestAmount)}</p>
+          )}
           {plan.notes && <p className="muted-text mt-1 text-xs font-semibold">{plan.notes}</p>}
         </div>
         <div className="text-left lg:text-right">
@@ -10683,8 +10752,9 @@ function InvoiceInstallmentPlanCard({ plan, payments, onPayment, onCancel }) {
         <ProgressBar value={summary.progress} max={100} danger={summary.isLate} />
       </div>
 
-      <div className="mt-4 grid gap-3 text-sm md:grid-cols-5">
-        <div><span className="muted-text block">Total</span><strong>{money.format(summary.totalAmount)}</strong></div>
+      <div className="mt-4 grid gap-3 text-sm md:grid-cols-6">
+        <div><span className="muted-text block">Original</span><strong>{money.format(summary.totalAmount)}</strong></div>
+        <div><span className="muted-text block">Total final</span><strong>{money.format(summary.agreementTotalAmount)}</strong></div>
         <div><span className="muted-text block">Pago</span><strong>{money.format(summary.paidAmount)}</strong></div>
         <div><span className="muted-text block">Restante</span><strong>{money.format(summary.openAmount)}</strong></div>
         <div><span className="muted-text block">Próxima</span><strong>{summary.nextDueDate ? formatDateBR(summary.nextDueDate) : "-"}</strong></div>
@@ -15475,6 +15545,104 @@ function GlobalStyles() {
           font-size: 0.88rem !important;
         }
       }
+
+      .invoice-installment-modal-backdrop {
+        background: rgba(2, 6, 23, 0.58) !important;
+        backdrop-filter: blur(12px) saturate(120%);
+        -webkit-backdrop-filter: blur(12px) saturate(120%);
+      }
+
+      .invoice-installment-modal-shell {
+        width: min(100%, 66rem);
+        max-height: calc(100dvh - 2rem);
+      }
+
+      .invoice-installment-modal-shell > .surface-card {
+        max-height: calc(100dvh - 2rem);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        border-radius: 2rem;
+        padding: clamp(1rem, 2vw, 1.5rem) !important;
+      }
+
+      .invoice-installment-modal-shell .input {
+        min-height: 3.1rem;
+      }
+
+      .invoice-installment-modal-shell form {
+        gap: 0.9rem;
+      }
+
+      .invoice-installment-modal-shell .grid.md\:grid-cols-6 {
+        grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+      }
+
+      @media (max-width: 1024px) {
+        .invoice-installment-modal-shell {
+          width: min(100%, 58rem);
+          max-height: calc(100dvh - 1.5rem);
+        }
+
+        .invoice-installment-modal-shell > .surface-card {
+          max-height: calc(100dvh - 1.5rem);
+        }
+      }
+
+      @media (max-width: 767px) {
+        .invoice-installment-modal-backdrop {
+          align-items: flex-end !important;
+          padding: 0 !important;
+        }
+
+        .invoice-installment-modal-shell {
+          width: 100% !important;
+          max-height: calc(92dvh - env(safe-area-inset-bottom));
+          border-radius: 1.5rem 1.5rem 0 0 !important;
+        }
+
+        .invoice-installment-modal-shell > .surface-card {
+          max-height: calc(92dvh - env(safe-area-inset-bottom));
+          overflow-y: auto;
+          border-radius: 1.5rem 1.5rem 0 0 !important;
+          padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom)) !important;
+        }
+
+        .invoice-installment-modal-shell .mb-5.flex.flex-col,
+        .invoice-installment-modal-shell .md\:flex-row {
+          gap: 0.75rem !important;
+        }
+
+        .invoice-installment-modal-shell .grid.md\:grid-cols-3,
+        .invoice-installment-modal-shell .grid.md\:grid-cols-4,
+        .invoice-installment-modal-shell .grid.md\:grid-cols-6 {
+          grid-template-columns: 1fr !important;
+        }
+
+        .invoice-installment-modal-shell h2 {
+          font-size: 1.08rem !important;
+          line-height: 1.25rem !important;
+        }
+
+        .invoice-installment-modal-shell .muted-text {
+          font-size: 0.78rem !important;
+          line-height: 1.25rem !important;
+        }
+
+        .invoice-installment-modal-shell .input {
+          min-height: 3rem !important;
+          font-size: 0.95rem !important;
+        }
+
+        .invoice-installment-modal-shell button[type="submit"],
+        .invoice-installment-modal-shell form > button {
+          min-height: 3.15rem !important;
+          position: sticky;
+          bottom: 0;
+          z-index: 5;
+          box-shadow: 0 -10px 28px rgba(2, 6, 23, 0.22);
+        }
+      }
+
 
     `}</style>
   );
