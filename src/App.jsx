@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import logoEA from "./assets/logo-ea.png";
 import { supabase } from "./supabaseClient";
 import {
@@ -10555,18 +10556,26 @@ function CardInstallmentPurchaseBox({ card, form, setForm, onSubmit, onClose }) 
 }
 
 function InvoiceInstallmentPlanModal({ open, card, selectedMonth, currentMonthAmount, openAmount, form, setForm, onSubmit, onClose }) {
-  if (!open) return null;
+  if (!open || typeof document === "undefined") return null;
 
-  return (
+  const portalTheme = document.documentElement.dataset.theme === "light" ? "theme-light" : "theme-dark";
+  const portalAccent = document.documentElement.dataset.accent || "emerald";
+  const portalDensity = document.documentElement.dataset.density || "comfortable";
+
+  return createPortal(
     <div
-      className="invoice-installment-modal-backdrop edit-modal-backdrop fixed inset-0 z-[95] flex items-end justify-center px-3 py-4 sm:items-center sm:px-4 sm:py-6"
+      className={classNames(
+        "app-shell",
+        portalTheme,
+        `accent-${portalAccent}`,
+        `density-${portalDensity}`,
+        "invoice-installment-modal-backdrop fixed inset-0 flex items-end justify-center px-3 py-4 sm:items-center sm:px-4 sm:py-6"
+      )}
       role="dialog"
       aria-modal="true"
       aria-label="Parcelar fatura"
     >
-      <div
-        className="invoice-installment-modal-shell w-full max-w-5xl overflow-hidden rounded-[2rem] shadow-2xl"
-      >
+      <div className="invoice-installment-modal-shell w-full max-w-5xl overflow-hidden rounded-[2rem] shadow-2xl">
         <InvoiceInstallmentPlanBox
           card={card}
           selectedMonth={selectedMonth}
@@ -10578,7 +10587,8 @@ function InvoiceInstallmentPlanModal({ open, card, selectedMonth, currentMonthAm
           onClose={onClose}
         />
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -10608,8 +10618,8 @@ function InvoiceInstallmentPlanBox({ card, selectedMonth, currentMonthAmount, op
   }
 
   return (
-    <section className="surface-card rounded-[2rem] p-5 shadow-sm">
-      <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+    <section className="invoice-installment-modal-card surface-card rounded-[2rem] p-5 shadow-sm">
+      <div className="invoice-installment-modal-header mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <div className="flex items-center gap-2">
             <h2 className="text-xl font-black">Parcelar fatura</h2>
@@ -10636,8 +10646,8 @@ function InvoiceInstallmentPlanBox({ card, selectedMonth, currentMonthAmount, op
       )}
 
       {card && isCreditCard && (
-        <form onSubmit={onSubmit} className="grid gap-4">
-          <div className="grid gap-3 md:grid-cols-3">
+        <form onSubmit={onSubmit} className="invoice-installment-modal-form grid gap-4">
+          <div className="invoice-installment-main-grid grid gap-3 md:grid-cols-3">
             <Field label="O que será parcelado">
               <select value={form.source_type} onChange={(event) => update("source_type", event.target.value)} className="input">
                 <option value="current_month">Fatura do mês atual</option>
@@ -10662,7 +10672,7 @@ function InvoiceInstallmentPlanBox({ card, selectedMonth, currentMonthAmount, op
             </Field>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-4">
+          <div className="invoice-installment-values-grid grid gap-3 md:grid-cols-4">
             <Field label="Valor da entrada">
               <input type="number" min="0" step="0.01" value={form.entry_amount} onChange={(event) => update("entry_amount", event.target.value)} className="input" placeholder="0,00" />
             </Field>
@@ -10693,7 +10703,7 @@ function InvoiceInstallmentPlanBox({ card, selectedMonth, currentMonthAmount, op
             <input value={form.notes} onChange={(event) => update("notes", event.target.value)} className="input" placeholder="Opcional. Ex.: acordo banco, taxa já inclusa, melhor dia para pagar" />
           </Field>
 
-          <div className="grid gap-3 rounded-[1.5rem] border border-violet-500/20 bg-violet-500/5 p-4 text-sm md:grid-cols-6">
+          <div className="invoice-installment-summary-grid grid gap-3 rounded-[1.5rem] border border-violet-500/20 bg-violet-500/5 p-4 text-sm md:grid-cols-6">
             <MiniInfo label="Fatura original" value={money.format(totalAmount || 0)} />
             <MiniInfo label="Entrada" value={money.format(entryAmount || 0)} />
             <MiniInfo label="Restante sem juros" value={money.format(financedAmount || 0)} />
@@ -10848,8 +10858,8 @@ function CreditCardInvoicePanel({
   const quickActionType = card.stored_value_card ? "credit" : "payment";
 
   return (
-    <section className="surface-card rounded-[2rem] p-5 shadow-sm">
-      <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+    <section className="invoice-installment-modal-card surface-card rounded-[2rem] p-5 shadow-sm">
+      <div className="invoice-installment-modal-header mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <h2 className="text-xl font-black">Controle do cartão {card.name}</h2>
           <p className="muted-text text-sm">Movimentações acumuladas até {safeMonthLabel(selectedMonth)}.</p>
@@ -15546,45 +15556,92 @@ function GlobalStyles() {
         }
       }
 
+      /* Parcelamento de fatura — modal real via portal, responsivo no Web e PWA */
+      body:has(.invoice-installment-modal-backdrop) {
+        overflow: hidden !important;
+      }
+
       .invoice-installment-modal-backdrop {
-        background: rgba(2, 6, 23, 0.58) !important;
-        backdrop-filter: blur(12px) saturate(120%);
-        -webkit-backdrop-filter: blur(12px) saturate(120%);
+        position: fixed !important;
+        inset: 0 !important;
+        width: 100vw !important;
+        height: 100dvh !important;
+        z-index: 12000 !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        padding: clamp(0.75rem, 2vw, 1.25rem) !important;
+        background: rgba(2, 6, 23, 0.66) !important;
+        backdrop-filter: blur(14px) saturate(120%) !important;
+        -webkit-backdrop-filter: blur(14px) saturate(120%) !important;
+        overflow: hidden !important;
       }
 
       .invoice-installment-modal-shell {
-        width: min(100%, 66rem);
-        max-height: calc(100dvh - 2rem);
+        width: min(100%, 64rem) !important;
+        max-height: min(92dvh, 46rem) !important;
+        overflow: hidden !important;
+        border-radius: 2rem !important;
+        animation: invoiceModalIn .18s cubic-bezier(.2,.8,.2,1) both;
       }
 
-      .invoice-installment-modal-shell > .surface-card {
-        max-height: calc(100dvh - 2rem);
-        overflow-y: auto;
-        overscroll-behavior: contain;
-        border-radius: 2rem;
+      .invoice-installment-modal-card {
+        display: flex !important;
+        flex-direction: column !important;
+        max-height: min(92dvh, 46rem) !important;
+        overflow-y: auto !important;
+        overscroll-behavior: contain !important;
+        border-radius: 2rem !important;
         padding: clamp(1rem, 2vw, 1.5rem) !important;
       }
 
+      .invoice-installment-modal-header {
+        position: sticky !important;
+        top: calc(-1 * clamp(1rem, 2vw, 1.5rem)) !important;
+        z-index: 15 !important;
+        margin: calc(-1 * clamp(1rem, 2vw, 1.5rem)) calc(-1 * clamp(1rem, 2vw, 1.5rem)) 1rem !important;
+        padding: clamp(1rem, 2vw, 1.5rem) !important;
+        background: color-mix(in srgb, var(--card) 94%, transparent) !important;
+        border-bottom: 1px solid var(--border) !important;
+        backdrop-filter: blur(16px) !important;
+        -webkit-backdrop-filter: blur(16px) !important;
+      }
+
+      .invoice-installment-modal-header .icon-button {
+        min-width: 2.75rem !important;
+        min-height: 2.75rem !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        background: color-mix(in srgb, var(--card-strong) 82%, transparent) !important;
+        border: 1px solid var(--border) !important;
+      }
+
+      .invoice-installment-modal-form {
+        gap: 0.9rem !important;
+      }
+
       .invoice-installment-modal-shell .input {
-        min-height: 3.1rem;
+        min-height: 3.1rem !important;
       }
 
-      .invoice-installment-modal-shell form {
-        gap: 0.9rem;
+      .invoice-installment-summary-grid {
+        grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr)) !important;
       }
 
-      .invoice-installment-modal-shell .grid.md\:grid-cols-6 {
-        grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+      @keyframes invoiceModalIn {
+        from { opacity: 0; transform: translateY(12px) scale(.985); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
       }
 
       @media (max-width: 1024px) {
         .invoice-installment-modal-shell {
-          width: min(100%, 58rem);
-          max-height: calc(100dvh - 1.5rem);
+          width: min(100%, 58rem) !important;
+          max-height: calc(100dvh - 1.5rem) !important;
         }
 
-        .invoice-installment-modal-shell > .surface-card {
-          max-height: calc(100dvh - 1.5rem);
+        .invoice-installment-modal-card {
+          max-height: calc(100dvh - 1.5rem) !important;
         }
       }
 
@@ -15592,57 +15649,400 @@ function GlobalStyles() {
         .invoice-installment-modal-backdrop {
           align-items: flex-end !important;
           padding: 0 !important;
+          background: rgba(2, 6, 23, 0.72) !important;
         }
 
         .invoice-installment-modal-shell {
-          width: 100% !important;
-          max-height: calc(92dvh - env(safe-area-inset-bottom));
-          border-radius: 1.5rem 1.5rem 0 0 !important;
+          width: 100vw !important;
+          max-width: none !important;
+          max-height: calc(100dvh - env(safe-area-inset-top)) !important;
+          height: calc(94dvh - env(safe-area-inset-top)) !important;
+          border-radius: 1.45rem 1.45rem 0 0 !important;
+          animation: invoiceMobileSheetIn .2s cubic-bezier(.2,.8,.2,1) both !important;
         }
 
-        .invoice-installment-modal-shell > .surface-card {
-          max-height: calc(92dvh - env(safe-area-inset-bottom));
-          overflow-y: auto;
-          border-radius: 1.5rem 1.5rem 0 0 !important;
-          padding: 1rem 1rem calc(1rem + env(safe-area-inset-bottom)) !important;
+        .invoice-installment-modal-card {
+          height: 100% !important;
+          max-height: 100% !important;
+          border-radius: 1.45rem 1.45rem 0 0 !important;
+          padding: 0 1rem calc(1rem + env(safe-area-inset-bottom)) !important;
         }
 
-        .invoice-installment-modal-shell .mb-5.flex.flex-col,
-        .invoice-installment-modal-shell .md\:flex-row {
-          gap: 0.75rem !important;
+        .invoice-installment-modal-header {
+          top: 0 !important;
+          margin: 0 -1rem 0.85rem !important;
+          padding: 0.95rem 1rem 0.85rem !important;
+          border-radius: 1.45rem 1.45rem 0 0 !important;
         }
 
-        .invoice-installment-modal-shell .grid.md\:grid-cols-3,
-        .invoice-installment-modal-shell .grid.md\:grid-cols-4,
-        .invoice-installment-modal-shell .grid.md\:grid-cols-6 {
+        .invoice-installment-modal-header::before {
+          content: "";
+          display: block;
+          width: 2.75rem;
+          height: 0.25rem;
+          margin: 0 auto 0.85rem;
+          border-radius: 999px;
+          background: color-mix(in srgb, var(--muted) 45%, transparent);
+        }
+
+        .invoice-installment-modal-header h2 {
+          font-size: 1.08rem !important;
+          line-height: 1.15 !important;
+        }
+
+        .invoice-installment-modal-header .muted-text {
+          display: none !important;
+        }
+
+        .invoice-installment-modal-header .icon-button {
+          min-width: 2.9rem !important;
+          min-height: 2.9rem !important;
+          border-radius: 1rem !important;
+        }
+
+        .invoice-installment-main-grid,
+        .invoice-installment-summary-grid {
           grid-template-columns: 1fr !important;
         }
 
-        .invoice-installment-modal-shell h2 {
-          font-size: 1.08rem !important;
-          line-height: 1.25rem !important;
+        .invoice-installment-values-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
         }
 
-        .invoice-installment-modal-shell .muted-text {
-          font-size: 0.78rem !important;
-          line-height: 1.25rem !important;
+        .invoice-installment-modal-shell .field-label {
+          font-size: 0.82rem !important;
+          margin-bottom: 0.38rem !important;
         }
 
         .invoice-installment-modal-shell .input {
           min-height: 3rem !important;
+          border-radius: 1.15rem !important;
           font-size: 0.95rem !important;
+          padding-left: 0.9rem !important;
+          padding-right: 0.9rem !important;
         }
 
-        .invoice-installment-modal-shell button[type="submit"],
-        .invoice-installment-modal-shell form > button {
-          min-height: 3.15rem !important;
-          position: sticky;
-          bottom: 0;
-          z-index: 5;
-          box-shadow: 0 -10px 28px rgba(2, 6, 23, 0.22);
+        .invoice-installment-modal-shell .rounded-2xl.border,
+        .invoice-installment-summary-grid {
+          padding: 0.85rem !important;
+          border-radius: 1.15rem !important;
+          font-size: 0.76rem !important;
+          line-height: 1.25rem !important;
+        }
+
+        .invoice-installment-modal-form > button {
+          position: sticky !important;
+          bottom: calc(-1rem - env(safe-area-inset-bottom)) !important;
+          z-index: 12 !important;
+          min-height: 3.25rem !important;
+          margin: 0 -1rem calc(-1rem - env(safe-area-inset-bottom)) !important;
+          border-radius: 0 !important;
+          box-shadow: 0 -16px 34px rgba(2, 6, 23, 0.42) !important;
+        }
+
+        .mobile-bottom-nav {
+          z-index: 70 !important;
+        }
+
+        body:has(.invoice-installment-modal-backdrop) .mobile-bottom-nav,
+        body:has(.invoice-installment-modal-backdrop) .mobile-more-sheet,
+        body:has(.invoice-installment-modal-backdrop) .mobile-more-dim {
+          display: none !important;
         }
       }
 
+      @keyframes invoiceMobileSheetIn {
+        from { opacity: 0; transform: translateY(24px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+
+
+      /* Ajuste final — Parcelamento de fatura no Web e PWA
+         Mantém o portal, mas impede o modal de virar uma tela enorme/transparente no desktop. */
+      .invoice-installment-modal-backdrop {
+        isolation: isolate !important;
+        cursor: default !important;
+      }
+
+      @media (min-width: 768px) {
+        .invoice-installment-modal-backdrop {
+          align-items: center !important;
+          justify-content: center !important;
+          padding: 2rem !important;
+          background: rgba(2, 6, 23, 0.58) !important;
+          backdrop-filter: blur(10px) saturate(115%) !important;
+          -webkit-backdrop-filter: blur(10px) saturate(115%) !important;
+        }
+
+        .invoice-installment-modal-shell {
+          width: min(100%, 880px) !important;
+          max-width: 880px !important;
+          height: auto !important;
+          max-height: min(88dvh, 760px) !important;
+          border-radius: 2rem !important;
+          overflow: hidden !important;
+          box-shadow: 0 30px 90px rgba(0, 0, 0, 0.46), 0 0 0 1px color-mix(in srgb, var(--border) 88%, transparent) !important;
+          background: var(--card) !important;
+        }
+
+        .invoice-installment-modal-card {
+          width: 100% !important;
+          max-height: min(88dvh, 760px) !important;
+          overflow-y: auto !important;
+          background: var(--card) !important;
+          border: 1px solid var(--border) !important;
+          border-radius: 2rem !important;
+          padding: 1.35rem !important;
+        }
+
+        .invoice-installment-modal-header {
+          position: sticky !important;
+          top: -1.35rem !important;
+          z-index: 20 !important;
+          margin: -1.35rem -1.35rem 1rem !important;
+          padding: 1.15rem 1.35rem !important;
+          background: color-mix(in srgb, var(--card) 96%, transparent) !important;
+          border-bottom: 1px solid var(--border) !important;
+        }
+
+        .invoice-installment-modal-main-grid,
+        .invoice-installment-main-grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+        }
+
+        .invoice-installment-values-grid {
+          grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+        }
+
+        .invoice-installment-modal-shell .input,
+        .invoice-installment-modal-shell select.input,
+        .invoice-installment-modal-shell textarea.input {
+          display: block !important;
+          width: 100% !important;
+          min-height: 3.2rem !important;
+          border-radius: 1.15rem !important;
+          border: 1px solid var(--border) !important;
+          background: var(--surface-2) !important;
+          color: var(--text) !important;
+          padding: 0.75rem 0.95rem !important;
+          font-size: 0.94rem !important;
+          font-weight: 700 !important;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.03) !important;
+        }
+
+        .invoice-installment-modal-shell .input:disabled {
+          opacity: 0.9 !important;
+          background: color-mix(in srgb, var(--surface-2) 78%, transparent) !important;
+          color: var(--muted) !important;
+        }
+
+        .invoice-installment-summary-grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+        }
+
+        .invoice-installment-modal-form > button {
+          position: static !important;
+          margin: 0 !important;
+          border-radius: 1.1rem !important;
+          min-height: 3.1rem !important;
+        }
+      }
+
+      @media (max-width: 767px) {
+        .invoice-installment-modal-backdrop {
+          align-items: flex-end !important;
+          justify-content: center !important;
+          padding: 0 !important;
+          background: rgba(2, 6, 23, 0.72) !important;
+          backdrop-filter: blur(10px) saturate(115%) !important;
+          -webkit-backdrop-filter: blur(10px) saturate(115%) !important;
+        }
+
+        .invoice-installment-modal-shell {
+          width: 100vw !important;
+          max-width: 100vw !important;
+          height: min(92dvh, calc(100dvh - env(safe-area-inset-top))) !important;
+          max-height: min(92dvh, calc(100dvh - env(safe-area-inset-top))) !important;
+          border-radius: 1.35rem 1.35rem 0 0 !important;
+          overflow: hidden !important;
+          background: var(--card) !important;
+        }
+
+        .invoice-installment-modal-card {
+          height: 100% !important;
+          max-height: 100% !important;
+          overflow-y: auto !important;
+          background: var(--card) !important;
+          border: 1px solid var(--border) !important;
+          border-bottom: 0 !important;
+          border-radius: 1.35rem 1.35rem 0 0 !important;
+          padding: 0 1rem calc(1rem + env(safe-area-inset-bottom)) !important;
+        }
+
+        .invoice-installment-modal-header {
+          position: sticky !important;
+          top: 0 !important;
+          z-index: 25 !important;
+          margin: 0 -1rem 0.85rem !important;
+          padding: 0.85rem 1rem !important;
+          background: color-mix(in srgb, var(--card) 97%, transparent) !important;
+          border-bottom: 1px solid var(--border) !important;
+          border-radius: 1.35rem 1.35rem 0 0 !important;
+        }
+
+        .invoice-installment-modal-header::before {
+          content: "";
+          display: block;
+          width: 2.75rem;
+          height: 0.25rem;
+          margin: 0 auto 0.75rem;
+          border-radius: 999px;
+          background: color-mix(in srgb, var(--muted) 45%, transparent);
+        }
+
+        .invoice-installment-main-grid,
+        .invoice-installment-values-grid,
+        .invoice-installment-summary-grid {
+          grid-template-columns: 1fr !important;
+        }
+
+        .invoice-installment-modal-shell .input,
+        .invoice-installment-modal-shell select.input,
+        .invoice-installment-modal-shell textarea.input {
+          display: block !important;
+          width: 100% !important;
+          min-height: 3.05rem !important;
+          border-radius: 1.1rem !important;
+          border: 1px solid var(--border) !important;
+          background: var(--surface-2) !important;
+          color: var(--text) !important;
+          padding: 0.72rem 0.9rem !important;
+          font-size: 0.95rem !important;
+          font-weight: 700 !important;
+        }
+
+        .invoice-installment-modal-form > button {
+          position: sticky !important;
+          bottom: calc(-1rem - env(safe-area-inset-bottom)) !important;
+          z-index: 20 !important;
+          min-height: 3.3rem !important;
+          margin: 0 -1rem calc(-1rem - env(safe-area-inset-bottom)) !important;
+          border-radius: 0 !important;
+          box-shadow: 0 -14px 32px rgba(2, 6, 23, 0.5) !important;
+        }
+      }
+
+
+
+
+      /* Correção final do portal do Parcelar Fatura
+         O portal sai do #root, então precisa carregar as variáveis do tema e forçar card sólido no Web/PWA. */
+      .invoice-installment-modal-backdrop.app-shell {
+        min-height: 100dvh !important;
+        color: var(--text) !important;
+        background: rgba(2, 6, 23, 0.68) !important;
+        backdrop-filter: blur(14px) saturate(120%) !important;
+        -webkit-backdrop-filter: blur(14px) saturate(120%) !important;
+      }
+
+      .invoice-installment-modal-backdrop .invoice-installment-modal-shell,
+      .invoice-installment-modal-backdrop .invoice-installment-modal-card {
+        background: var(--surface) !important;
+        color: var(--text) !important;
+        border-color: var(--border) !important;
+      }
+
+      .theme-dark.invoice-installment-modal-backdrop .invoice-installment-modal-shell,
+      .theme-dark.invoice-installment-modal-backdrop .invoice-installment-modal-card {
+        background: #0f172a !important;
+        color: #f8fafc !important;
+        border-color: #1e293b !important;
+      }
+
+      .theme-light.invoice-installment-modal-backdrop .invoice-installment-modal-shell,
+      .theme-light.invoice-installment-modal-backdrop .invoice-installment-modal-card {
+        background: #ffffff !important;
+        color: #0b1220 !important;
+        border-color: #d9e3ee !important;
+      }
+
+      .invoice-installment-modal-backdrop .invoice-installment-modal-card {
+        box-shadow: 0 28px 90px rgba(0, 0, 0, 0.42) !important;
+      }
+
+      .invoice-installment-modal-backdrop .invoice-installment-modal-header {
+        background: var(--surface) !important;
+        color: var(--text) !important;
+      }
+
+      .theme-dark.invoice-installment-modal-backdrop .invoice-installment-modal-header {
+        background: #0f172a !important;
+        color: #f8fafc !important;
+      }
+
+      .theme-light.invoice-installment-modal-backdrop .invoice-installment-modal-header {
+        background: #ffffff !important;
+        color: #0b1220 !important;
+      }
+
+      .invoice-installment-modal-backdrop .input,
+      .invoice-installment-modal-backdrop select.input,
+      .invoice-installment-modal-backdrop textarea.input {
+        opacity: 1 !important;
+        visibility: visible !important;
+        background: var(--surface-2) !important;
+        color: var(--text) !important;
+        border: 1px solid var(--border) !important;
+      }
+
+      .theme-dark.invoice-installment-modal-backdrop .input,
+      .theme-dark.invoice-installment-modal-backdrop select.input,
+      .theme-dark.invoice-installment-modal-backdrop textarea.input {
+        background: #020617 !important;
+        color: #f8fafc !important;
+        border-color: #334155 !important;
+      }
+
+      .theme-light.invoice-installment-modal-backdrop .input,
+      .theme-light.invoice-installment-modal-backdrop select.input,
+      .theme-light.invoice-installment-modal-backdrop textarea.input {
+        background: #f8fafc !important;
+        color: #0b1220 !important;
+        border-color: #d9e3ee !important;
+      }
+
+      @media (min-width: 768px) {
+        .invoice-installment-modal-backdrop .invoice-installment-modal-shell {
+          width: min(92vw, 920px) !important;
+          max-width: 920px !important;
+          max-height: min(88dvh, 760px) !important;
+          border-radius: 1.75rem !important;
+          overflow: hidden !important;
+        }
+
+        .invoice-installment-modal-backdrop .invoice-installment-modal-card {
+          max-height: min(88dvh, 760px) !important;
+          overflow-y: auto !important;
+          border-radius: 1.75rem !important;
+          padding: 1.25rem !important;
+        }
+      }
+
+      @media (max-width: 767px) {
+        .invoice-installment-modal-backdrop .invoice-installment-modal-shell {
+          width: 100vw !important;
+          height: min(92dvh, calc(100dvh - env(safe-area-inset-top))) !important;
+          max-height: min(92dvh, calc(100dvh - env(safe-area-inset-top))) !important;
+          border-radius: 1.35rem 1.35rem 0 0 !important;
+        }
+
+        .invoice-installment-modal-backdrop .invoice-installment-modal-card {
+          height: 100% !important;
+          max-height: 100% !important;
+          overflow-y: auto !important;
+          border-radius: 1.35rem 1.35rem 0 0 !important;
+        }
+      }
 
     `}</style>
   );
